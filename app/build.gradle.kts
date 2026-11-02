@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-    namespace = "com.client.app"
+    namespace = "com.legode.app"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.client.app"
+        applicationId = "com.legode.app"
         minSdk = 28
         targetSdk = 36
 

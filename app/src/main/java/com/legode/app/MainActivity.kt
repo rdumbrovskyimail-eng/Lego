@@ -1,4 +1,4 @@
-package com.client.app
+package com.legode.app
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -15,14 +15,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.sp
-import com.client.app.ui.display.DisplayRateManager
+import com.legode.app.ui.display.DisplayRateManager
 import dagger.hilt.android.AndroidEntryPoint
 
 private val ObsidianBlackScheme = darkColorScheme(
     primary = Color(0xFFF4F4F5),
     onPrimary = Color(0xFF09090B),
-    secondary = Color(0xFF34A853),
-    onSecondary = Color(0xFF000000),
+    secondary = Color(0xFFE53935),
+    onSecondary = Color(0xFFFFFFFF),
     tertiary = Color(0xFF4285F4),
     onTertiary = Color(0xFFFFFFFF),
     background = Color(0xFF000000),
@@ -63,9 +63,9 @@ class MainActivity : ComponentActivity() {
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = "Gemini Live Ultra",
+                            text = "legode",
                             color = MaterialTheme.colorScheme.onBackground,
-                            fontSize = 24.sp
+                            fontSize = 28.sp
                         )
                     }
                 }

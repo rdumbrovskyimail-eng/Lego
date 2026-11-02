@@ -1,4 +1,4 @@
-package com.client.app.ui.display
+package com.legode.app.ui.display
 
 import android.view.Window
 
