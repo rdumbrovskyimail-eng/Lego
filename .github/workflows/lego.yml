@@ -1,0 +1,394 @@
+name: Setup and Build Legode App
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refactor-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Refactor project to Legode
+        run: |
+          echo "=== 1. Очистка старых файлов пакета ==="
+          rm -rf app/src/main/java/com/client
+
+          echo "=== 2. Создание структуры директорий ==="
+          mkdir -p app/src/main/java/com/legode/app/ui/display
+          mkdir -p app/src/main/res/drawable
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/mipmap-anydpi-v26
+          mkdir -p gradle/wrapper
+
+          echo "=== 3. Запись настроек сборки ==="
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "legode"
+          include(":app")
+          EOF
+
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.compose")
+              id("com.google.devtools.ksp")
+              id("com.google.dagger.hilt.android")
+          }
+
+          android {
+              namespace = "com.legode.app"
+              compileSdk = 36
+
+              defaultConfig {
+                  applicationId = "com.legode.app"
+                  minSdk = 28
+                  targetSdk = 36
+
+                  versionCode = 1
+                  versionName = "1.0.0"
+              }
+
+              buildFeatures {
+                  buildConfig = true
+                  compose = true
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                      proguardFiles(
+                          getDefaultProguardFile("proguard-android-optimize.txt"),
+                          "proguard-rules.pro"
+                      )
+                  }
+                  debug {
+                      isMinifyEnabled = false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+          }
+
+          kotlin {
+              compilerOptions {
+                  jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.15.0")
+              implementation("androidx.activity:activity-compose:1.10.0")
+
+              val composeBom = platform("androidx.compose:compose-bom:2025.02.00")
+              implementation(composeBom)
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.ui:ui-graphics")
+              implementation("androidx.compose.material3:material3")
+
+              implementation("com.google.dagger:hilt-android:2.57.2")
+              ksp("com.google.dagger:hilt-android-compiler:2.57.2")
+
+              implementation("com.jakewharton.timber:timber:5.0.1")
+          }
+          EOF
+
+          echo "=== 4. Запись манифеста и ресурсов ==="
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:tools="http://schemas.android.com/tools">
+
+              <application
+                  android:name=".LegodeApplication"
+                  android:allowBackup="false"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:label="@string/app_name"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.LegodeApp"
+                  android:enableOnBackInvokedCallback="true"
+                  tools:targetApi="36">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTask"
+                      android:screenOrientation="portrait"
+                      android:windowSoftInputMode="adjustResize"
+                      tools:ignore="LockedOrientationActivity">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/values/strings.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">legode</string>
+          </resources>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/values/themes.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources xmlns:tools="http://schemas.android.com/tools">
+              <style name="Theme.LegodeApp" parent="android:Theme.Material.NoActionBar">
+                  <item name="android:statusBarColor">@android:color/transparent</item>
+                  <item name="android:navigationBarColor">@android:color/transparent</item>
+                  <item name="android:windowLightStatusBar">false</item>
+                  <item name="android:windowLightNavigationBar">false</item>
+                  <item name="android:windowBackground">@color/canvas_black</item>
+                  <item name="android:colorBackground">@color/canvas_black</item>
+                  <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+                  <item name="android:enforceStatusBarContrast" tools:targetApi="q">false</item>
+                  <item name="android:enforceNavigationBarContrast" tools:targetApi="q">false</item>
+              </style>
+          </resources>
+          EOF
+
+          echo "=== 5. Создание иконки (Lego Style) ==="
+          cat << 'EOF' > app/src/main/res/drawable/ic_launcher_background.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path
+                  android:fillColor="#0D0D0F"
+                  android:pathData="M0,0h108v108h-108z" />
+          </vector>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/drawable/ic_launcher_foreground.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path
+                  android:fillColor="#E53935"
+                  android:pathData="M 39,36 H 49 A 3,3 0 0,1 52,39 V 45 H 36 V 39 A 3,3 0 0,1 39,36 Z" />
+              <path
+                  android:fillColor="#E53935"
+                  android:pathData="M 59,36 H 69 A 3,3 0 0,1 72,39 V 45 H 56 V 39 A 3,3 0 0,1 59,36 Z" />
+              <path
+                  android:fillColor="#E53935"
+                  android:pathData="M 33,45 H 75 A 6,6 0 0,1 81,51 V 71 A 6,6 0 0,1 75,77 H 33 A 6,6 0 0,1 27,71 V 51 A 6,6 0 0,1 33,45 Z" />
+              <path
+                  android:fillColor="#FFFFFF"
+                  android:pathData="M 45,53 H 49 V 65 H 63 V 69 H 45 Z" />
+          </vector>
+          EOF
+
+          echo "=== 6. Запись исходного кода Kotlin ==="
+          cat << 'EOF' > app/src/main/java/com/legode/app/LegodeApplication.kt
+          package com.legode.app
+
+          import android.app.Application
+          import dagger.hilt.android.HiltAndroidApp
+          import timber.log.Timber
+
+          @HiltAndroidApp
+          class LegodeApplication : Application() {
+              override fun onCreate() {
+                  super.onCreate()
+                  if (BuildConfig.DEBUG) {
+                      Timber.plant(Timber.DebugTree())
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/legode/app/ui/display/DisplayRateManager.kt
+          package com.legode.app.ui.display
+
+          import android.view.Window
+
+          object DisplayRateManager {
+              fun setHighRefreshRate(window: Window, enable: Boolean) {
+                  runCatching {
+                      val layoutParams = window.attributes
+                      layoutParams.preferredRefreshRate = if (enable) 120.0f else 0.0f
+                      layoutParams.preferredDisplayModeId = 0
+                      window.attributes = layoutParams
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/legode/app/MainActivity.kt
+          package com.legode.app
+
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.SystemBarStyle
+          import androidx.activity.compose.setContent
+          import androidx.activity.enableEdgeToEdge
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.material3.MaterialTheme
+          import androidx.compose.material3.Surface
+          import androidx.compose.material3.Text
+          import androidx.compose.material3.darkColorScheme
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.unit.sp
+          import com.legode.app.ui.display.DisplayRateManager
+          import dagger.hilt.android.AndroidEntryPoint
+
+          private val ObsidianBlackScheme = darkColorScheme(
+              primary = Color(0xFFF4F4F5),
+              onPrimary = Color(0xFF09090B),
+              secondary = Color(0xFFE53935),
+              onSecondary = Color(0xFFFFFFFF),
+              tertiary = Color(0xFF4285F4),
+              onTertiary = Color(0xFFFFFFFF),
+              background = Color(0xFF000000),
+              onBackground = Color(0xFFF4F4F5),
+              surface = Color(0xFF0D0D0F),
+              onSurface = Color(0xFFF4F4F5),
+              surfaceVariant = Color(0xFF18181B),
+              onSurfaceVariant = Color(0xFFA1A1AA),
+              surfaceContainer = Color(0xFF111113),
+              surfaceContainerHigh = Color(0xFF18181B),
+              outline = Color(0xFF3F3F46),
+              outlineVariant = Color(0xFF27272A),
+              error = Color(0xFFEA4335),
+              onError = Color(0xFFFFFFFF)
+          )
+
+          @AndroidEntryPoint
+          class MainActivity : ComponentActivity() {
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  enableEdgeToEdge(
+                      statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+                      navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                  )
+
+                  DisplayRateManager.setHighRefreshRate(window, true)
+
+                  setContent {
+                      MaterialTheme(colorScheme = ObsidianBlackScheme) {
+                          Surface(
+                              modifier = Modifier.fillMaxSize(),
+                              color = MaterialTheme.colorScheme.background
+                          ) {
+                              Box(
+                                  modifier = Modifier.fillMaxSize(),
+                                  contentAlignment = Alignment.Center
+                              ) {
+                                  Text(
+                                      text = "legode",
+                                      color = MaterialTheme.colorScheme.onBackground,
+                                      fontSize = 28.sp
+                                  )
+                              }
+                          }
+                      }
+                  }
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  DisplayRateManager.setHighRefreshRate(window, true)
+              }
+
+              override fun onPause() {
+                  super.onPause()
+                  DisplayRateManager.setHighRefreshRate(window, false)
+              }
+          }
+          EOF
+
+          echo "=== 7. Обновление README и .gitignore ==="
+          echo "# legode" > README.md
+
+          cat << 'EOF' > .gitignore
+          *.iml
+          .gradle
+          /local.properties
+          /.idea/
+          .DS_Store
+          /build
+          /captures
+          .externalNativeBuild
+          .cxx
+          app/build/
+          !gradle/wrapper/gradle-wrapper.jar
+          EOF
+
+      - name: Download Gradle Wrapper & Script
+        run: |
+          echo "=== Загрузка официального gradle-wrapper.jar и gradlew ==="
+          curl -sSL "https://raw.githubusercontent.com/gradle/gradle/master/gradle/wrapper/gradle-wrapper.jar" -o gradle/wrapper/gradle-wrapper.jar
+          curl -sSL "https://raw.githubusercontent.com/gradle/gradle/master/gradlew" -o gradlew
+          chmod +x gradlew
+
+      - name: Commit and Push changes back to repo
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --staged --quiet; then
+            echo "Committing and pushing changes..."
+            git commit -m "Auto-refactor: complete transition to legode and Gradle wrapper setup"
+            git push origin HEAD:${{ github.ref_name }}
+          else
+            echo "No changes to commit."
+          fi
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: false
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: legode-debug
+          path: app/build/outputs/apk/debug/*.apk
