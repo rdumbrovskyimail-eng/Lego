@@ -15,13 +15,13 @@ class PsySportRepository @Inject constructor(
 ) {
     fun getCbtByDate(date: String): Flow<List<CbtEntry>> = cbtDao.getEntriesByDate(date)
     fun getAllCbt(): Flow<List<CbtEntry>> = cbtDao.getAllEntries()
-    suspend fun saveCbt(entry: CbtEntry) = cbtDao.insert(entry)
-    suspend fun deleteCbt(id: Long) = cbtDao.deleteById(id)
+    suspend fun saveCbt(entry: CbtEntry): Long = cbtDao.insert(entry)
+    suspend fun deleteCbt(id: Long) { cbtDao.deleteById(id) }
     fun getCbtActiveDates(): Flow<List<String>> = cbtDao.getAllActiveDates()
 
     fun getWorkoutsByDate(date: String): Flow<List<WorkoutEntry>> = sportDao.getWorkoutsByDate(date)
     fun getAllWorkouts(): Flow<List<WorkoutEntry>> = sportDao.getAllWorkouts()
-    suspend fun saveWorkout(entry: WorkoutEntry) = sportDao.insert(entry)
-    suspend fun deleteWorkout(id: Long) = sportDao.deleteById(id)
+    suspend fun saveWorkout(entry: WorkoutEntry): Long = sportDao.insert(entry)
+    suspend fun deleteWorkout(id: Long) { sportDao.deleteById(id) }
     fun getSportActiveDates(): Flow<List<String>> = sportDao.getAllActiveDates()
 }
