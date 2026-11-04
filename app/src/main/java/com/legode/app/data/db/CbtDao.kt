@@ -19,7 +19,7 @@ interface CbtDao {
     suspend fun insert(entry: CbtEntry): Long
 
     @Query("DELETE FROM cbt_entries WHERE id = :id")
-    suspend fun deleteById(id: Long)
+    suspend fun deleteById(id: Long): Int
 
     @Query("SELECT DISTINCT date FROM cbt_entries")
     fun getAllActiveDates(): Flow<List<String>>
