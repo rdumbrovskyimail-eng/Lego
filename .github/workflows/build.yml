@@ -2,9 +2,9 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "master" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
@@ -21,13 +21,13 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # Прописываем скачивание gradle-wrapper.jar
+      # Скачивание файла jar загрузчика Gradle
       - name: Download Gradle Wrapper JAR
         run: |
           mkdir -p gradle/wrapper
           curl -sSL "https://github.com/gradle/gradle/raw/v8.14.3/gradle/wrapper/gradle-wrapper.jar" -o gradle/wrapper/gradle-wrapper.jar
 
-      # Если скрипта gradlew тоже нет в репозитории, создаем его через встроенный gradle
+      # Если скрипта gradlew нет в репозитории — генерируем его
       - name: Ensure gradlew script exists
         run: |
           if [ ! -f "gradlew" ]; then
@@ -38,6 +38,8 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: false
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug --stacktrace
@@ -45,5 +47,5 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
+          name: psysport-debug
           path: app/build/outputs/apk/debug/*.apk
