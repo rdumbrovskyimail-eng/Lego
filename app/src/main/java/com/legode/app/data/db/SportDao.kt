@@ -19,7 +19,7 @@ interface SportDao {
     suspend fun insert(entry: WorkoutEntry): Long
 
     @Query("DELETE FROM workout_entries WHERE id = :id")
-    suspend fun deleteById(id: Long)
+    suspend fun deleteById(id: Long): Int
 
     @Query("SELECT DISTINCT date FROM workout_entries")
     fun getAllActiveDates(): Flow<List<String>>
