@@ -37,6 +37,7 @@ val AVAILABLE_DISTORTIONS = listOf(
     "Туннельное зрение"
 )
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CbtScreen(
     entries: List<CbtEntry>,
@@ -209,6 +210,7 @@ fun CbtCard(entry: CbtEntry, onDelete: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun CbtProtocolDialog(
     selectedDate: String,
