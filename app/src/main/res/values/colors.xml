@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="canvas_white">#FFFFFF</color>
-    <color name="canvas_black">#000000</color>
+    <color name="ink_black">#0B0D12</color>
+    <color name="flag_gold">#FFCE3A</color>
+    <color name="flag_red">#E5484D</color>
+    <color name="pure_white">#FFFFFF</color>
 </resources>
