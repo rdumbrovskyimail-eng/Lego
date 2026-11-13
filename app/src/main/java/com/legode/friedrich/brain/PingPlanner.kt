@@ -5,11 +5,6 @@ import com.legode.friedrich.data.Repository
 import com.legode.friedrich.data.RuntimeState
 import com.legode.friedrich.data.Settings
 import com.legode.friedrich.data.db.SessionEntity
-import com.legode.friedrich.core.Srs
-import com.legode.friedrich.core.Norm
-import com.legode.friedrich.data.Curriculum
-import com.legode.friedrich.data.Topic
-import com.legode.friedrich.data.Skills
 import kotlin.random.Random
 
 /** Что именно Friedrich напишет в очередном «смс». */
@@ -84,9 +79,9 @@ class PingPlanner(private val repo: Repository, private val runtime: RuntimeStat
         val today = Timex.today()
         val hour = Timex.dateTime(now).hour
         val mastery = repo.masteryMap()
-        val unanswered = repo.pingDao.unansweredSince(now - 36 * Srs.HOUR)
+        val unanswered = repo.pingDao.unansweredSince(now - 36 * com.legode.friedrich.core.Srs.HOUR)
         val lastUserAt = repo.messageDao.lastUserAt() ?: 0L
-        val silentDays = if (lastUserAt == 0L) 0 else ((now - lastUserAt) / Srs.DAY).toInt()
+        val silentDays = if (lastUserAt == 0L) 0 else ((now - lastUserAt) / com.legode.friedrich.core.Srs.DAY).toInt()
 
         if (forcedKind != null) return build(forcedKind, session, mastery, now, rnd, unanswered, silentDays)
 
@@ -149,18 +144,18 @@ class PingPlanner(private val repo: Repository, private val runtime: RuntimeStat
         unanswered: Int,
         silentDays: Int
     ): PingPlan {
-        val focus = Curriculum.focus(mastery, 4)
+        val focus = com.legode.friedrich.data.Curriculum.focus(mastery, 4)
         val touched = repo.topicDao.all().filter { it.exposures > 0 }.map { it.topicId }.toSet()
-        val weak = Curriculum.weakest(mastery, touched, 3)
+        val weak = com.legode.friedrich.data.Curriculum.weakest(mastery, touched, 3)
 
-        fun pickTopic(): Topic {
-            val pool = ArrayList<Topic>()
+        fun pickTopic(): com.legode.friedrich.data.Topic {
+            val pool = ArrayList<com.legode.friedrich.data.Topic>()
             pool.addAll(focus)
             pool.addAll(focus.take(2))
             pool.addAll(weak)
             // иногда — возврат к уже пройденному, чтобы не забывалось
-            Curriculum.topics.filter { (mastery[it.id] ?: 0) in 40..95 }.shuffled(rnd).take(2).forEach { pool.add(it) }
-            return if (pool.isEmpty()) Curriculum.topics.first() else pool[rnd.nextInt(pool.size)]
+            com.legode.friedrich.data.Curriculum.topics.filter { (mastery[it.id] ?: 0) in 40..95 }.shuffled(rnd).take(2).forEach { pool.add(it) }
+            return if (pool.isEmpty()) com.legode.friedrich.data.Curriculum.topics.first() else pool[rnd.nextInt(pool.size)]
         }
 
         when (kind) {
@@ -201,7 +196,7 @@ class PingPlanner(private val repo: Repository, private val runtime: RuntimeStat
                 val due = repo.vocabDao.due(now, 6)
                 if (due.isEmpty()) return build("grammar", session, mastery, now, rnd, unanswered, silentDays)
                 val w = due[rnd.nextInt(due.size)]
-                val isNoun = Norm.articleOf(w.de).isNotEmpty()
+                val isNoun = com.legode.friedrich.core.Norm.articleOf(w.de).isNotEmpty()
                 val variants = ArrayList<String>()
                 variants.add("перевод с русского на немецкий")
                 variants.add("перевод с немецкого на русский")
@@ -306,7 +301,7 @@ class PingPlanner(private val repo: Repository, private val runtime: RuntimeStat
             }
 
             "situation" -> {
-                val sc = Skills.scenarios[rnd.nextInt(Skills.scenarios.size)]
+                val sc = com.legode.friedrich.data.Skills.scenarios[rnd.nextInt(com.legode.friedrich.data.Skills.scenarios.size)]
                 return PingPlan(
                     kind,
                     "МИНИ-СЦЕНКА «${sc.title}». ${sc.brief} Одной строкой по-русски обозначь ситуацию и задачу ученика, " +
