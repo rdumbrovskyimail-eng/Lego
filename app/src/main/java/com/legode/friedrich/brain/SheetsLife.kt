@@ -115,7 +115,7 @@ Akkusativ: Ich kaufe **einen** Pullover / **eine** Jacke / **ein** Hemd. Ich bra
 **Аренда:** die Miete (kalt — без коммунальных, warm — с ними), die Nebenkosten (Pl), die Kaution (залог), der Vermieter / die Vermieterin, der Mieter, der Nachbar / die Nachbarin, der Quadratmeter (m²), mieten, vermieten, umziehen, einziehen, ausziehen, besichtigen.
 
 **Описать:** Ich wohne in einer Wohnung / in einem Haus. · Meine Wohnung hat drei Zimmer, eine Küche und ein Bad. · Die Wohnung ist 60 Quadratmeter groß. · Sie ist hell / dunkel / ruhig / laut / groß / klein / teuer / günstig / möbliert. · Die Miete beträgt 700 Euro warm. · Im Wohnzimmer gibt es **ein** Sofa und **einen** Tisch. · Das Bad ist klein, aber modern. · Ich wohne im zweiten Stock.
-**Спросить:** Ich suche eine Wohnung. · Ist the Wohnung noch frei? · Wie hoch ist die Miete? · Wie groß ist die Wohnung? · Wann kann ich die Wohnung besichtigen? · Gibt es einen Balkon? · Wo ist das Bad? — Hier links.
+**Спросить:** Ich suche eine Wohnung. · Ist die Wohnung noch frei? · Wie hoch ist die Miete? · Wie groß ist die Wohnung? · Wann kann ich die Wohnung besichtigen? · Gibt es einen Balkon? · Wo ist das Bad? — Hier links.
 **В объявлениях:** 2 Zi. = 2 Zimmer · KM = Kaltmiete · WM = Warmmiete · NK = Nebenkosten · EG = Erdgeschoss · OG = Obergeschoss · ab sofort (сразу).
 """.trimIndent()
     ),
@@ -244,7 +244,7 @@ spielen + без артикля: Fußball / Tennis / Karten / Gitarre spielen.
 
 **О себе:** Was sind Sie von Beruf? — Ich bin Lehrer(in). (без артикля!) · Ich arbeite **als** Fahrer. · Ich arbeite **bei** Siemens / **in** einem Büro / **im** Krankenhaus / **in** einer Schule. · Ich bin arbeitslos. Ich suche Arbeit. · Ich mache eine Ausbildung. · Ich studiere Medizin. · Ich bin Rentner(in). · Ich bin in Elternzeit.
 **Условия:** die Vollzeit / die Teilzeit, die Schicht, die Pause, der Feierabend (конец рабочего дня), der Urlaub, frei haben, das Gehalt / der Lohn, der Chef / die Chefin, der Kollege / die Kollegin, die Firma, das Büro, die Stelle, die Bewerbung, der Lebenslauf, das Vorstellungsgespräch, der Arbeitsvertrag.
-Ich arbeite von Montag bis Freitag, 40 Stunden pro Woche. · Ich arbeite von 8 bis 16 Uhr. · Meine Arbeit is interessant / anstrengend / langweilig. · Am Wochenende habe ich frei. · Ich habe drei Wochen Urlaub.
+Ich arbeite von Montag bis Freitag, 40 Stunden pro Woche. · Ich arbeite von 8 bis 16 Uhr. · Meine Arbeit ist interessant / anstrengend / langweilig. · Am Wochenende habe ich frei. · Ich habe drei Wochen Urlaub.
 **Сообщить о болезни:** Guten Morgen, hier ist … Ich bin krank und kann heute leider nicht kommen.
 """.trimIndent()
     ),
@@ -330,7 +330,7 @@ der Regen, der Schnee, der Wind, die Sonne, die Wolke (-n), das Gewitter, der Ne
 **Времена года:** der Frühling, der Sommer, der Herbst, der Winter → **im** Sommer. **Стороны света:** der Norden, der Süden, der Osten, der Westen → **im** Norden.
 Im Winter ist es kalt und es schneit. · Im Sommer ist es heiß. · Wie ist das Wetter in Russland?
 
-**Одежда (die Kleidung):** die Hose, die Jeans, der Rock, das Kleid, das Hemd, die Bluse, das T-Shirt, der Pullover, der Jacke, der Mantel, der Anzug, der Schuh (-e), der Stiefel (-), die Socke (-n), die Mütze, der Schal, der Handschuh (-e), die Tasche, der Regenschirm, die Brille.
+**Одежда (die Kleidung):** die Hose, die Jeans, der Rock, das Kleid, das Hemd, die Bluse, das T-Shirt, der Pullover, die Jacke, der Mantel, der Anzug, der Schuh (-e), der Stiefel (-), die Socke (-n), die Mütze, der Schal, der Handschuh (-e), die Tasche, der Regenschirm, die Brille.
 **tragen** (du trägst, er trägt) — носить; **anziehen** — надевать; **ausziehen** — снимать: Ich trage **eine** Jacke und **einen** Schal. · Was ziehst du heute an? · Zieh den Mantel an, es ist kalt!
 **Цвета:** rot, blau, grün, gelb, schwarz, weiß, grau, braun, orange, rosa, lila. Die Jacke ist blau. · Welche Farbe hat dein Auto?
 """.trimIndent()
