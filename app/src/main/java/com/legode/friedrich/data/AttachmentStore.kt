@@ -319,8 +319,8 @@ class AttachmentStore(private val context: Context) {
         }
         var text = String(bytes, Charsets.UTF_8)
         // UTF-8 BOM и «битые» кодировки: если слишком много символов замены — пробуем windows-1251
-        if (text.startsWith("﻿")) text = text.substring(1)
-        val bad = text.count { it == '' }
+        if (text.isNotEmpty() && text[0] == BOM) text = text.substring(1)
+        val bad = text.count { it == REPLACEMENT_CHAR }
         if (bad > text.length / 20) {
             text = try {
                 String(bytes, charset("windows-1251"))
@@ -382,6 +382,10 @@ class AttachmentStore(private val context: Context) {
         private const val MAX_BINARY_BYTES = 15L * 1024 * 1024
         private const val MAX_TEXT_CHARS = 120_000
         private const val MAX_IMAGE_DIM = 1600
+
+        /** Невидимые символы задаём кодом, а не литералом, — так они не теряются при копировании файла. */
+        private val BOM = Char(0xFEFF)
+        private val REPLACEMENT_CHAR = Char(0xFFFD)
 
         private val IMAGE_EXT = setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "bmp", "gif")
         private val AUDIO_EXT = setOf("mp3", "wav", "aac", "m4a", "ogg", "oga", "opus", "flac", "amr", "3gp")
