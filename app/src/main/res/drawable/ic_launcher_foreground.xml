@@ -4,16 +4,12 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- «смс-пузырь» -->
     <path
-        android:fillColor="#E53935"
-        android:pathData="M 39,36 H 49 A 3,3 0 0,1 52,39 V 45 H 36 V 39 A 3,3 0 0,1 39,36 Z" />
+        android:fillColor="#FFCE3A"
+        android:pathData="M38,31 H70 A8,8 0 0 1 78,39 V61 A8,8 0 0 1 70,69 H51 L40,79 V69 H38 A8,8 0 0 1 30,61 V39 A8,8 0 0 1 38,31 Z" />
+    <!-- буква F -->
     <path
-        android:fillColor="#E53935"
-        android:pathData="M 59,36 H 69 A 3,3 0 0,1 72,39 V 45 H 56 V 39 A 3,3 0 0,1 59,36 Z" />
-    <path
-        android:fillColor="#E53935"
-        android:pathData="M 33,45 H 75 A 6,6 0 0,1 81,51 V 71 A 6,6 0 0,1 75,77 H 33 A 6,6 0 0,1 27,71 V 51 A 6,6 0 0,1 33,45 Z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M 45,53 H 49 V 65 H 63 V 69 H 45 Z" />
+        android:fillColor="#0B0D12"
+        android:pathData="M46,39 H64 V44.5 H52 V48 H61 V53.5 H52 V62 H46 Z" />
 </vector>
