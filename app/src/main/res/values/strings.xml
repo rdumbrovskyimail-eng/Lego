@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">PsySport Pro</string>
+    <string name="app_name">Friedrich</string>
+    <string name="channel_chat_name">Сообщения от Фридриха</string>
+    <string name="channel_chat_desc">СМС-задания, вопросы и ответы наставника</string>
+    <string name="channel_service_name">Friedrich на связи</string>
+    <string name="channel_service_desc">Тихое служебное уведомление постоянной работы</string>
 </resources>
