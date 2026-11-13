@@ -7,16 +7,30 @@ plugins {
 }
 
 android {
-    namespace = "com.legode.app"
+    namespace = "com.legode.friedrich"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.legode.app"
+        applicationId = "com.legode.friedrich"
         minSdk = 28
         targetSdk = 36
 
         versionCode = 1
         versionName = "1.0.0"
+    }
+
+    // Постоянный ключ подписи debug-сборок: APK из разных запусков CI ставятся
+    // поверх друг друга без удаления приложения (база знаний Фридриха сохраняется).
+    signingConfigs {
+        getByName("debug") {
+            val stableKeystore = rootProject.file("keystore/friedrich-debug.keystore")
+            if (stableKeystore.exists()) {
+                storeFile = stableKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
     }
 
     buildFeatures {
@@ -34,12 +48,19 @@ android {
         }
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
     }
 }
 
@@ -57,6 +78,7 @@ dependencies {
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
+    implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
@@ -68,13 +90,11 @@ dependencies {
     implementation("com.google.dagger:hilt-android:2.57.2")
     ksp("com.google.dagger:hilt-android-compiler:2.57.2")
 
-    // Room Database (локальная база данных SQLite)
+    // Room Database (локальная база знаний Фридриха)
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
 
-    // JSON сериализация для списков упражнений и искажений
-    implementation("com.google.code.gson:gson:2.12.1")
-
-    implementation("com.jakewharton.timber:timber:5.0.1")
+    // WorkManager: фоновые «пинги», ответы из шторки уведомлений, сторожевой таймер
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
 }
