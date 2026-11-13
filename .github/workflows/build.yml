@@ -21,11 +21,21 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # Скачивание файла jar загрузчика Gradle
+      # Скачивание файла jar загрузчика Gradle (на случай, если бинарник не попал в репозиторий)
       - name: Download Gradle Wrapper JAR
         run: |
           mkdir -p gradle/wrapper
-          curl -sSL "https://github.com/gradle/gradle/raw/v8.14.3/gradle/wrapper/gradle-wrapper.jar" -o gradle/wrapper/gradle-wrapper.jar
+          if [ ! -s "gradle/wrapper/gradle-wrapper.jar" ]; then
+            curl -sSL "https://github.com/gradle/gradle/raw/v8.14.3/gradle/wrapper/gradle-wrapper.jar" -o gradle/wrapper/gradle-wrapper.jar
+          fi
+
+      # Постоянный ключ подписи: если в репозитории только текстовая копия (.b64) — восстанавливаем бинарный файл.
+      # Благодаря одному ключу новые APK ставятся поверх старых, и досье Фридриха не теряется.
+      - name: Restore stable debug keystore
+        run: |
+          if [ ! -s "keystore/friedrich-debug.keystore" ] && [ -s "keystore/friedrich-debug.keystore.b64" ]; then
+            base64 -d keystore/friedrich-debug.keystore.b64 > keystore/friedrich-debug.keystore
+          fi
 
       # Если скрипта gradlew нет в репозитории — генерируем его
       - name: Ensure gradlew script exists
@@ -34,6 +44,7 @@ jobs:
             echo "gradlew not found, generating wrapper scripts..."
             gradle wrapper --gradle-version 8.14.3
           fi
+          sed -i 's/\r$//' gradlew
           chmod +x gradlew
 
       - name: Setup Gradle
@@ -47,5 +58,6 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: psysport-debug
+          name: friedrich-debug
           path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
