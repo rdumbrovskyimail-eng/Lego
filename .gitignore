@@ -9,3 +9,4 @@
 .cxx
 app/build/
 !gradle/wrapper/gradle-wrapper.jar
+!keystore/friedrich-debug.keystore
