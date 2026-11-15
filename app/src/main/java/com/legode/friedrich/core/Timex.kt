@@ -1,5 +1,6 @@
 package com.legode.friedrich.core
 
+import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -7,8 +8,17 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 
-/** Всё, что связано со временем: дни, «сколько прошло», контекст времени суток. */
+/** Всё, что связано со временем: дни, «сколько прошло», циркадные фазы и эмоциональный контекст дня. */
 object Timex {
+
+    enum class CircadianPhase {
+        MORNING_START,   // 05..10 — запуск, опора, фокус дня
+        MIDDAY_FLOW,     // 11..13 — продуктивное окно
+        AFTERNOON_DIP,   // 14..17 — спад энергии, риск прокрастинации
+        EVENING_UNWIND,  // 18..21 — подведение итогов, разгрузка головы
+        LATE_RISK,       // 22..23 — риск руминации, беречь сон
+        DEEP_NIGHT       // 00..04 — уязвимое время, только бережная стабилизация
+    }
 
     private val dayFmt: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
     private val hmFmt: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
@@ -34,6 +44,13 @@ object Timex {
         LocalDate.parse(day, dayFmt).minusDays(1).format(dayFmt)
     } catch (_: Exception) {
         ""
+    }
+
+    /** Последние [count] дней в формате yyyy-MM-dd от самого раннего к сегодняшнему. */
+    fun recentDays(count: Int, nowMillis: Long = now()): List<String> {
+        if (count <= 0) return emptyList()
+        val end = dateTime(nowMillis).toLocalDate()
+        return ((count - 1) downTo 0).map { offset -> end.minusDays(offset.toLong()).format(dayFmt) }
     }
 
     fun hhmm(millis: Long): String = dateTime(millis).format(hmFmt)
@@ -105,15 +122,42 @@ object Timex {
         return "${weekdaysRu[wd]}, ${dt.dayOfMonth} ${monthsRuGen[m]} ${dt.year}, ${dt.format(hmFmt)}"
     }
 
+    fun circadianPhase(nowMillis: Long = now()): CircadianPhase = when (dateTime(nowMillis).hour) {
+        in 5..10 -> CircadianPhase.MORNING_START
+        in 11..13 -> CircadianPhase.MIDDAY_FLOW
+        in 14..17 -> CircadianPhase.AFTERNOON_DIP
+        in 18..21 -> CircadianPhase.EVENING_UNWIND
+        in 22..23 -> CircadianPhase.LATE_RISK
+        else -> CircadianPhase.DEEP_NIGHT
+    }
+
+    fun isNightRisk(nowMillis: Long = now()): Boolean {
+        val p = circadianPhase(nowMillis)
+        return p == CircadianPhase.LATE_RISK || p == CircadianPhase.DEEP_NIGHT
+    }
+
+    fun isWeekend(nowMillis: Long = now()): Boolean =
+        dateTime(nowMillis).dayOfWeek == DayOfWeek.SATURDAY || dateTime(nowMillis).dayOfWeek == DayOfWeek.SUNDAY
+
     /** Эмоциональный и циркадный контекст времени суток. */
-    fun partOfDay(nowMillis: Long = now()): String {
-        return when (dateTime(nowMillis).hour) {
-            in 5..10 -> "утро (старт дня и настройка опоры)"
-            in 11..13 -> "первая половина дня (рабочий ритм)"
-            in 14..17 -> "день (возможен спад энергии после полудня)"
-            in 18..21 -> "вечер (время замедлиться и разгрузить голову)"
-            in 22..23 -> "поздний вечер (пора беречь сон и отпускать контроль)"
-            else -> "глубокая ночь (уязвимое время: усталость и тревожные мысли усиливаются)"
+    fun partOfDay(nowMillis: Long = now()): String = when (circadianPhase(nowMillis)) {
+        CircadianPhase.MORNING_START -> "утро (старт дня, сборка опоры и первого шага)"
+        CircadianPhase.MIDDAY_FLOW -> "первая половина дня (рабочий ритм и ясность)"
+        CircadianPhase.AFTERNOON_DIP -> "день (возможен спад энергии и прокрастинация)"
+        CircadianPhase.EVENING_UNWIND -> "вечер (время подвести итог и разгрузить голову)"
+        CircadianPhase.LATE_RISK -> "поздний вечер (пора беречь сон и останавливать прокрутку мыслей)"
+        CircadianPhase.DEEP_NIGHT -> "глубокая ночь (уязвимое время: усталость усиливает тревогу и безнадёжность)"
+    }
+
+    /** Дополнительный контекст дня недели для промпта. */
+    fun dayContext(nowMillis: Long = now()): String {
+        val dt = dateTime(nowMillis)
+        return when (dt.dayOfWeek) {
+            DayOfWeek.MONDAY -> if (dt.hour < 14) "понедельник, старт недели (часто включается сопротивление и тревога масштаба)" else "понедельник"
+            DayOfWeek.FRIDAY -> if (dt.hour >= 16) "вечер пятницы (накопленная усталость недели)" else "пятница"
+            DayOfWeek.SATURDAY -> "суббота (выходной день — риск либо выгорания, либо ощущения пустоты)"
+            DayOfWeek.SUNDAY -> if (dt.hour >= 17) "воскресный вечер (часто накатывает тревога перед понедельником)" else "воскресенье"
+            else -> weekdaysRu[dt.dayOfWeek.value - 1]
         }
     }
 
