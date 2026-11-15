@@ -2,34 +2,28 @@ package com.legode.friedrich.brain
 
 import java.util.Locale
 
-/** Нормализация строк: ключи словаря, ошибок и фактов (чтобы не плодить дубли). */
+/** Нормализация строк: ключи якорей силы, ловушек ума, фактов и очистка текста. */
 object Norm {
 
-    private val ARTICLES = listOf("der ", "die ", "das ", "ein ", "eine ", "einen ", "einem ", "einer ")
-    private val PARENS = Regex("\\([^)]*\\)")
+    private val RU = Locale.forLanguageTag("ru")
     private val SPACES = Regex("\\s+")
     private val NOT_WORD = Regex("[^\\p{L}\\p{Nd} ]")
+    private val NON_SPEAKABLE = Regex("[^\\p{L}\\p{Nd}\\s.,!?:;—–\\-()«»\"'/%+]")
 
-    /** «der Tisch (die Tische)» → «tisch»; «Guten Morgen!» → «guten morgen». */
-    fun vocabKey(de: String): String {
-        var s = de.replace(PARENS, " ").lowercase(Locale.GERMAN).trim()
-        s = s.replace(SPACES, " ")
-        for (a in ARTICLES) {
-            if (s.startsWith(a) && s.length > a.length) {
-                s = s.substring(a.length)
-                break
-            }
-        }
-        s = s.trim().trimEnd('.', '!', '?', ',', ';', ':', '…')
-        s = s.trimStart('„', '"', '«', '-', '–', '•', '*').trimEnd('“', '"', '»')
-        return s.trim()
+    /** Ключ для якоря / цитаты / рефрейма: убирает кавычки, знаки препинания и дубли. */
+    fun anchorKey(text: String): String {
+        val cleaned = text
+            .trim()
+            .trimStart('„', '"', '«', '-', '–', '•', '*', '✦', '⚓')
+            .trimEnd('“', '"', '»', '.', '!', '?')
+        return looseKey(cleaned).take(90)
     }
 
-    /** Ключ ошибки/факта: только буквы и цифры в нижнем регистре, один пробел между словами. */
+    /** Ключ ловушки/факта: только буквы и цифры в нижнем регистре, один пробел между словами. */
     fun looseKey(text: String): String =
-        text.lowercase(Locale.GERMAN).replace(NOT_WORD, " ").replace(SPACES, " ").trim()
+        text.lowercase(RU).replace(NOT_WORD, " ").replace(SPACES, " ").trim()
 
-    /** Грубая оценка «это одно и то же» для фактов: один ключ целиком входит в другой. */
+    /** Грубая оценка «это одно и то же» для фактов и убеждений: один ключ входит в другой. */
     fun similar(a: String, b: String): Boolean {
         val x = looseKey(a)
         val y = looseKey(b)
@@ -37,17 +31,6 @@ object Norm {
         if (x == y) return true
         val (short, long) = if (x.length <= y.length) x to y else y to x
         return short.length >= 12 && long.contains(short)
-    }
-
-    /** Достаёт артикль из формы «der Tisch»; пусто, если артикля нет. */
-    fun articleOf(de: String): String {
-        val low = de.trim().lowercase(Locale.GERMAN)
-        return when {
-            low.startsWith("der ") -> "der"
-            low.startsWith("die ") -> "die"
-            low.startsWith("das ") -> "das"
-            else -> ""
-        }
     }
 
     /** Убирает markdown-разметку — для превью в списке чатов и текста уведомлений. */
@@ -70,29 +53,24 @@ object Norm {
         return if (flat.length <= max) flat else flat.substring(0, max - 1).trimEnd() + "…"
     }
 
-    /** Латинские (немецкие) фрагменты смешанного RU/DE-текста — их читает вслух TTS. */
-    fun germanParts(text: String): String {
-        val flat = plain(text)
+    /** Очищает текст для плавного чтения системным синтезатором речи (убирает эмодзи и лишние знаки). */
+    fun speakable(text: String): String {
+        val lines = plain(text)
+            .replace("→", ", значит ")
+            .replace("• ", "")
+            .replace(NON_SPEAKABLE, " ")
+            .lines()
+            .map { it.replace(SPACES, " ").trim() }
+            .filter { it.isNotEmpty() }
+        if (lines.isEmpty()) return ""
         val out = StringBuilder()
-        val chunk = StringBuilder()
-        fun flush() {
-            val c = chunk.toString().trim().trimStart { !it.isLetterOrDigit() }.trimEnd { !it.isLetterOrDigit() && it != '?' && it != '!' && it != '.' }
-            // фрагмент считаем немецким, если в нём есть хотя бы одно слово из 2+ латинских букв
-            if (Regex("[A-Za-zÄÖÜäöüß]{2,}").containsMatchIn(c)) {
-                if (out.isNotEmpty()) out.append(if (out.last() == '.' || out.last() == '?' || out.last() == '!') " " else ". ")
-                out.append(c)
+        for (line in lines) {
+            if (out.isNotEmpty()) {
+                val last = out.last()
+                out.append(if (last == '.' || last == '!' || last == '?' || last == ':') " " else ". ")
             }
-            chunk.setLength(0)
+            out.append(line)
         }
-        for (ch in flat) {
-            val cyr = ch in 'Ѐ'..'ӿ'
-            when {
-                cyr -> flush()
-                ch == '\n' -> flush()
-                else -> chunk.append(ch)
-            }
-        }
-        flush()
-        return out.toString().replace(Regex("\\s+"), " ").trim()
+        return out.toString().replace(SPACES, " ").trim()
     }
 }
