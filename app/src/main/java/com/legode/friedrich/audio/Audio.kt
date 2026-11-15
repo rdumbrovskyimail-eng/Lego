@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.util.Locale
 
-/** Озвучка немецкого текста системным синтезатором речи (de-DE). */
+/** Озвучка сообщений, практик и опорных фраз системным синтезатором речи (ru-RU). */
 class Speaker(private val context: Context) {
 
     private var tts: TextToSpeech? = null
@@ -22,7 +22,7 @@ class Speaker(private val context: Context) {
 
     private val availableState = MutableStateFlow(true)
 
-    /** false, если на устройстве нет немецкого голоса. */
+    /** false, если на устройстве нет русского голоса. */
     val available: StateFlow<Boolean> = availableState.asStateFlow()
 
     private fun ensure() {
@@ -32,7 +32,11 @@ class Speaker(private val context: Context) {
                 if (status == TextToSpeech.SUCCESS) {
                     val engine = tts
                     val result = try {
-                        engine?.setLanguage(Locale.GERMANY) ?: TextToSpeech.LANG_NOT_SUPPORTED
+                        var res = engine?.setLanguage(Locale.forLanguageTag("ru-RU")) ?: TextToSpeech.LANG_NOT_SUPPORTED
+                        if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
+                            res = engine?.setLanguage(Locale.forLanguageTag("ru")) ?: TextToSpeech.LANG_NOT_SUPPORTED
+                        }
+                        res
                     } catch (_: Throwable) {
                         TextToSpeech.LANG_NOT_SUPPORTED
                     }
@@ -52,19 +56,19 @@ class Speaker(private val context: Context) {
         }
     }
 
-    /** Читает вслух только немецкие фрагменты смешанного текста. */
+    /** Читает вслух сообщение или практику без разметки и лишних символов. */
     fun speak(text: String, rate: Float) {
-        val german = Norm.germanParts(text)
-        if (german.isBlank()) return
+        val clean = Norm.speakable(text)
+        if (clean.isBlank()) return
         ensure()
-        if (ready) speakNow(german, rate) else pending = german to rate
+        if (ready) speakNow(clean, rate) else pending = clean to rate
     }
 
     private fun speakNow(text: String, rate: Float) {
         try {
             val engine = tts ?: return
             engine.setSpeechRate(rate.coerceIn(0.5f, 1.5f))
-            engine.speak(text.take(3500), TextToSpeech.QUEUE_FLUSH, null, "friedrich-" + System.nanoTime())
+            engine.speak(text.take(3500), TextToSpeech.QUEUE_FLUSH, null, "atlas-" + System.nanoTime())
         } catch (t: Throwable) {
             Logx.w("tts speak failed", t)
         }
@@ -78,7 +82,7 @@ class Speaker(private val context: Context) {
     }
 }
 
-/** Запись голосового сообщения (AAC), которое потом слушает Gemini. */
+/** Запись голосового сообщения (AAC), которое потом слушает Атлас (Gemini). */
 class VoiceRecorder(private val context: Context) {
 
     private var recorder: MediaRecorder? = null
