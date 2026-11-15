@@ -7,18 +7,13 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 
-/** Всё, что связано со временем: дни, «сколько прошло», немецкие и русские названия. */
+/** Всё, что связано со временем: дни, «сколько прошло», контекст времени суток. */
 object Timex {
 
     private val dayFmt: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
     private val hmFmt: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
-    val weekdaysDe = listOf("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")
     val weekdaysRu = listOf("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
-    val monthsDe = listOf(
-        "Januar", "Februar", "März", "April", "Mai", "Juni",
-        "Juli", "August", "September", "Oktober", "November", "Dezember"
-    )
     val monthsRuGen = listOf(
         "января", "февраля", "марта", "апреля", "мая", "июня",
         "июля", "августа", "сентября", "октября", "ноября", "декабря"
@@ -102,22 +97,23 @@ object Timex {
         return "%d:%02d".format(total / 60, total % 60)
     }
 
-    /** Строка для промпта: «вторник (Dienstag), 10 ноября 2026 (10. November 2026), 17:40». */
+    /** Строка для промпта: «вторник, 10 ноября 2026, 17:40». */
     fun describeNow(nowMillis: Long = now()): String {
         val dt = dateTime(nowMillis)
         val wd = dt.dayOfWeek.value - 1
         val m = dt.monthValue - 1
-        return "${weekdaysRu[wd]} (${weekdaysDe[wd]}), ${dt.dayOfMonth} ${monthsRuGen[m]} ${dt.year} " +
-            "(${dt.dayOfMonth}. ${monthsDe[m]} ${dt.year}), ${dt.format(hmFmt)}"
+        return "${weekdaysRu[wd]}, ${dt.dayOfMonth} ${monthsRuGen[m]} ${dt.year}, ${dt.format(hmFmt)}"
     }
 
+    /** Эмоциональный и циркадный контекст времени суток. */
     fun partOfDay(nowMillis: Long = now()): String {
         return when (dateTime(nowMillis).hour) {
-            in 5..10 -> "утро (der Morgen)"
-            in 11..13 -> "полдень (der Mittag)"
-            in 14..17 -> "день (der Nachmittag)"
-            in 18..22 -> "вечер (der Abend)"
-            else -> "ночь (die Nacht)"
+            in 5..10 -> "утро (старт дня и настройка опоры)"
+            in 11..13 -> "первая половина дня (рабочий ритм)"
+            in 14..17 -> "день (возможен спад энергии после полудня)"
+            in 18..21 -> "вечер (время замедлиться и разгрузить голову)"
+            in 22..23 -> "поздний вечер (пора беречь сон и отпускать контроль)"
+            else -> "глубокая ночь (уязвимое время: усталость и тревожные мысли усиливаются)"
         }
     }
 
