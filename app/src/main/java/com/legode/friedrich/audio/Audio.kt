@@ -5,6 +5,7 @@ import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Build
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import com.legode.friedrich.brain.Norm
 import com.legode.friedrich.core.Logx
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,17 +14,31 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.util.Locale
 
-/** Озвучка сообщений, практик и опорных фраз системным синтезатором речи (ru-RU). */
+/** Озвучка сообщений, практик, дыхательных сессий и опорных фраз системным синтезатором речи (ru-RU). */
 class Speaker(private val context: Context) {
 
     private var tts: TextToSpeech? = null
     private var ready = false
-    private var pending: Pair<String, Float>? = null
+    private var pending: PendingSpeech? = null
+
+    @Volatile
+    private var lastUtteranceId: String = ""
 
     private val availableState = MutableStateFlow(true)
+    private val speakingState = MutableStateFlow(false)
 
     /** false, если на устройстве нет русского голоса. */
     val available: StateFlow<Boolean> = availableState.asStateFlow()
+
+    /** true, пока синтезатор произносит сообщение или держит дыхательную паузу. */
+    val speaking: StateFlow<Boolean> = speakingState.asStateFlow()
+
+    private data class PendingSpeech(val text: String, val rate: Float, val pitch: Float)
+
+    private sealed class Segment {
+        data class Words(val text: String) : Segment()
+        data class Pause(val ms: Long) : Segment()
+    }
 
     private fun ensure() {
         if (tts != null) return
@@ -31,6 +46,30 @@ class Speaker(private val context: Context) {
             tts = TextToSpeech(context.applicationContext) { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     val engine = tts
+                    engine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                        override fun onStart(utteranceId: String?) {
+                            speakingState.value = true
+                        }
+
+                        override fun onDone(utteranceId: String?) {
+                            if (utteranceId == lastUtteranceId) {
+                                speakingState.value = false
+                            }
+                        }
+
+                        @Deprecated("Deprecated in Java")
+                        override fun onError(utteranceId: String?) {
+                            if (utteranceId == lastUtteranceId || utteranceId == null) {
+                                speakingState.value = false
+                            }
+                        }
+
+                        override fun onError(utteranceId: String?, errorCode: Int) {
+                            if (utteranceId == lastUtteranceId || utteranceId == null) {
+                                speakingState.value = false
+                            }
+                        }
+                    })
                     val result = try {
                         var res = engine?.setLanguage(Locale.forLanguageTag("ru-RU")) ?: TextToSpeech.LANG_NOT_SUPPORTED
                         if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
@@ -44,7 +83,7 @@ class Speaker(private val context: Context) {
                     availableState.value = ready
                     val p = pending
                     pending = null
-                    if (ready && p != null) speakNow(p.first, p.second)
+                    if (ready && p != null) speakNow(p.text, p.rate, p.pitch)
                 } else {
                     ready = false
                     availableState.value = false
@@ -56,29 +95,112 @@ class Speaker(private val context: Context) {
         }
     }
 
-    /** Читает вслух сообщение или практику без разметки и лишних символов. */
-    fun speak(text: String, rate: Float) {
-        val clean = Norm.speakable(text)
-        if (clean.isBlank()) return
+    /**
+     * Читает вслух сообщение или практику без разметки и лишних символов.
+     * Поддерживает маркеры пауз в тексте: `[пауза]` (2 сек) или `[пауза 4с]` (до 12 сек).
+     */
+    fun speak(text: String, rate: Float, pitch: Float = 1.0f) {
+        if (text.isBlank()) return
         ensure()
-        if (ready) speakNow(clean, rate) else pending = clean to rate
-    }
-
-    private fun speakNow(text: String, rate: Float) {
-        try {
-            val engine = tts ?: return
-            engine.setSpeechRate(rate.coerceIn(0.5f, 1.5f))
-            engine.speak(text.take(3500), TextToSpeech.QUEUE_FLUSH, null, "atlas-" + System.nanoTime())
-        } catch (t: Throwable) {
-            Logx.w("tts speak failed", t)
+        if (ready) {
+            speakNow(text, rate, pitch)
+        } else {
+            pending = PendingSpeech(text, rate, pitch)
         }
     }
 
+    private fun speakNow(rawText: String, rate: Float, pitch: Float) {
+        try {
+            val engine = tts ?: return
+            val segments = buildSegments(rawText)
+            if (segments.isEmpty()) return
+
+            engine.setSpeechRate(rate.coerceIn(0.5f, 1.5f))
+            engine.setPitch(pitch.coerceIn(0.75f, 1.25f))
+
+            val baseId = "atlas-" + System.nanoTime()
+            val finalId = "$baseId-${segments.lastIndex}"
+            lastUtteranceId = finalId
+            speakingState.value = true
+
+            segments.forEachIndexed { index, seg ->
+                val queueMode = if (index == 0) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+                val uid = "$baseId-$index"
+                when (seg) {
+                    is Segment.Words -> engine.speak(seg.text, queueMode, null, uid)
+                    is Segment.Pause -> engine.playSilentUtterance(seg.ms, queueMode, uid)
+                }
+            }
+        } catch (t: Throwable) {
+            Logx.w("tts speak failed", t)
+            speakingState.value = false
+        }
+    }
+
+    private fun buildSegments(raw: String): List<Segment> {
+        val out = ArrayList<Segment>()
+        val matches = PAUSE_TAG.findAll(raw).toList()
+        if (matches.isEmpty()) {
+            addSpeakableChunks(raw, out)
+            return out
+        }
+        var cursor = 0
+        for (m in matches) {
+            if (m.range.first > cursor) {
+                addSpeakableChunks(raw.substring(cursor, m.range.first), out)
+            }
+            val sec = m.groupValues.getOrNull(1)?.toIntOrNull() ?: 2
+            out.add(Segment.Pause((sec.coerceIn(1, 12)) * 1000L))
+            cursor = m.range.last + 1
+        }
+        if (cursor < raw.length) {
+            addSpeakableChunks(raw.substring(cursor), out)
+        }
+        return out
+    }
+
+    private fun addSpeakableChunks(rawPart: String, out: MutableList<Segment>) {
+        val clean = Norm.speakable(rawPart)
+        if (clean.isBlank()) return
+        if (clean.length <= MAX_CHUNK) {
+            out.add(Segment.Words(clean))
+            return
+        }
+        var remaining = clean
+        while (remaining.length > MAX_CHUNK) {
+            val cutArea = remaining.substring(0, MAX_CHUNK)
+            var splitAt = cutArea.lastIndexOfAny(charArrayOf('.', '!', '?', '\n'))
+            if (splitAt < MAX_CHUNK / 3) splitAt = cutArea.lastIndexOf(' ')
+            if (splitAt <= 0) splitAt = MAX_CHUNK - 1
+            val piece = remaining.substring(0, splitAt + 1).trim()
+            if (piece.isNotEmpty()) out.add(Segment.Words(piece))
+            remaining = remaining.substring(splitAt + 1).trim()
+        }
+        if (remaining.isNotEmpty()) out.add(Segment.Words(remaining))
+    }
+
     fun stop() {
+        pending = null
+        speakingState.value = false
         try {
             tts?.stop()
         } catch (_: Throwable) {
         }
+    }
+
+    fun release() {
+        stop()
+        try {
+            tts?.shutdown()
+        } catch (_: Throwable) {
+        }
+        tts = null
+        ready = false
+    }
+
+    private companion object {
+        const val MAX_CHUNK = 3000
+        val PAUSE_TAG = Regex("\\[(?:пауза|pause)(?:\\s+(\\d{1,2})\\s*(?:с|сек|s)?)?\\]", RegexOption.IGNORE_CASE)
     }
 }
 
@@ -102,7 +224,7 @@ class VoiceRecorder(private val context: Context) {
             r.setAudioChannels(1)
             r.setAudioSamplingRate(22050)
             r.setAudioEncodingBitRate(48000)
-            r.setMaxDuration(120_000)
+            r.setMaxDuration(180_000)
             r.setOutputFile(target.absolutePath)
             r.prepare()
             r.start()
@@ -119,6 +241,13 @@ class VoiceRecorder(private val context: Context) {
             }
             false
         }
+    }
+
+    /** Текущая амплитуда микрофона (0..32767) для визуализации записи. */
+    fun amplitude(): Int = try {
+        recorder?.maxAmplitude ?: 0
+    } catch (_: Throwable) {
+        0
     }
 
     /** @return файл и длительность в мс; null, если запись слишком короткая или не удалась. */
@@ -144,6 +273,10 @@ class VoiceRecorder(private val context: Context) {
             f?.delete()
         } catch (_: Throwable) {
         }
+    }
+
+    fun release() {
+        cancel()
     }
 
     private fun stopInternal(): Boolean {
@@ -211,4 +344,6 @@ class VoicePlayer {
         } catch (_: Throwable) {
         }
     }
+
+    fun release() = stop()
 }
