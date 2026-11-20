@@ -14,7 +14,7 @@ object Norm {
     private val SPACES = Regex("\\s+")
     private val NOT_WORD = Regex("[^\\p{L}\\p{Nd} ]")
     private val NON_SPEAKABLE = Regex("[^\\p{L}\\p{Nd}\\s.,!?:;—–\\-()«»\"'/%+]")
-    private val PAUSE_MARK = Regex("\[(?:пауза|pause)(?:\\s+\\d{1,2}\\s*(?:с|сек|s)?)?\]", RegexOption.IGNORE_CASE)
+    private val PAUSE_MARK = Regex("\\[(?:пауза|pause)(?:\\s+\\d{1,2}\\s*(?:с|сек|s)?)?\\]", RegexOption.IGNORE_CASE)
 
     private val STOP_WORDS = setOf(
         "и", "в", "во", "на", "с", "со", "но", "а", "или", "да", "нет", "не", "ни",
