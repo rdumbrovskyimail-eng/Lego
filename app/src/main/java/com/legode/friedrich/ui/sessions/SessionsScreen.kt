@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -52,6 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.legode.friedrich.brain.Curriculum
+import com.legode.friedrich.brain.Persona
 import com.legode.friedrich.brain.PingScheduler
 import com.legode.friedrich.brain.Skills
 import com.legode.friedrich.core.Timex
@@ -61,12 +63,12 @@ import com.legode.friedrich.ui.Screen
 import com.legode.friedrich.ui.common.Chip
 import com.legode.friedrich.ui.common.ConfirmDialog
 import com.legode.friedrich.ui.common.EmojiAvatar
-import com.legode.friedrich.ui.common.FAvatar
 import com.legode.friedrich.ui.common.InputDialog
 import com.legode.friedrich.ui.common.Meter
 import com.legode.friedrich.ui.common.Panel
 import com.legode.friedrich.ui.common.Pill
 import com.legode.friedrich.ui.common.TopBar
+import com.legode.friedrich.ui.theme.AtlasAvatar
 import com.legode.friedrich.ui.theme.Fx
 import kotlinx.coroutines.delay
 
@@ -74,8 +76,8 @@ import kotlinx.coroutines.delay
 fun SessionsScreen(main: MainViewModel) {
     val sessions by main.sessions.collectAsStateWithLifecycle()
     val profile by main.profile.collectAsStateWithLifecycle()
-    val topics by main.topics.collectAsStateWithLifecycle()
-    val vocab by main.vocab.collectAsStateWithLifecycle()
+    val skills by main.skills.collectAsStateWithLifecycle()
+    val anchors by main.anchors.collectAsStateWithLifecycle()
     val settings by main.settingsFlow.collectAsStateWithLifecycle()
     val nextPing by main.nextPing.collectAsStateWithLifecycle()
 
@@ -94,9 +96,9 @@ fun SessionsScreen(main: MainViewModel) {
         }
     }
 
-    val mastery = remember(topics) { topics.associate { it.topicId to it.mastery } }
+    val mastery = remember(skills) { skills.associate { it.skillId to it.mastery } }
     val estimate = remember(mastery) { Curriculum.estimate(mastery) }
-    val due = remember(vocab, now) { vocab.count { it.dueAt <= now } }
+    val due = remember(anchors, now) { anchors.count { it.dueAt <= now } }
     val shown = remember(sessions, query) {
         val q = query.trim().lowercase()
         if (q.isEmpty()) sessions
@@ -109,12 +111,12 @@ fun SessionsScreen(main: MainViewModel) {
             .background(Fx.Ink)
     ) {
         Column(Modifier.fillMaxSize()) {
-            TopBar(title = "Friedrich", subtitle = "Deutsch A0–A1 · твой наставник") {
+            TopBar(title = Persona.NAME, subtitle = "психо-эмоциональный движок") {
                 IconButton(onClick = { main.open(Screen.Dossier) }) {
                     Icon(Icons.Filled.Insights, contentDescription = "Досье", tint = Fx.Text)
                 }
                 IconButton(onClick = { main.open(Screen.Reference(null)) }) {
-                    Icon(Icons.Filled.MenuBook, contentDescription = "Справочник", tint = Fx.Text)
+                    Icon(Icons.Filled.MenuBook, contentDescription = "База и практики", tint = Fx.Text)
                 }
                 IconButton(onClick = { main.open(Screen.Settings) }) {
                     Icon(Icons.Filled.Settings, contentDescription = "Настройки", tint = Fx.Text)
@@ -129,36 +131,44 @@ fun SessionsScreen(main: MainViewModel) {
                     Panel(onClick = { main.open(Screen.Dossier) }) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
+                                val who = profile?.name?.takeIf { it.isNotBlank() }?.let { "$it · " } ?: ""
+                                val moodTail = profile?.lastMood?.takeIf { it > 0 }?.let { " · $it/10" } ?: ""
                                 Text(
-                                    (profile?.name?.takeIf { it.isNotBlank() }?.let { "$it · " } ?: "") + "уровень " + estimate.label,
+                                    "${who}опора: ${estimate.label}$moodTail",
                                     color = Fx.Text, style = MaterialTheme.typography.titleMedium
                                 )
                                 Spacer(Modifier.height(6.dp))
                                 Meter(estimate.overall, Modifier.fillMaxWidth())
                                 Spacer(Modifier.height(6.dp))
                                 Text(
-                                    "Программа A0–A1 пройдена на ${estimate.overall}%",
+                                    "Навыки устойчивости освоены на ${estimate.overall}%",
                                     color = Fx.TextDim, style = MaterialTheme.typography.bodySmall
                                 )
                             }
                             Spacer(Modifier.width(12.dp))
                             Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Pill("🔥 ${profile?.streak ?: 0} дн", Fx.Gold)
-                                Pill("⭐ ${profile?.xp ?: 0} XP")
-                                Pill("🃏 $due к повторению", if (due > 0) Fx.Blue else Fx.TextDim)
+                                Pill("⚡ ${profile?.xp ?: 0} XP")
+                                Pill("⚓ $due якорей", if (due > 0) Fx.Blue else Fx.TextDim)
                             }
                         }
                         Spacer(Modifier.height(10.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             val pingText = when {
-                                !settings.pingsEnabled -> "СМС от Фридриха выключены"
-                                nextPing <= 0L -> "Friedrich скоро напишет"
-                                nextPing <= now -> "Friedrich вот-вот напишет…"
+                                !settings.pingsEnabled -> "СМС от Атласа выключены"
+                                nextPing <= 0L -> "Атлас скоро выйдет на связь"
+                                nextPing <= now -> "Атлас вот-вот напишет…"
                                 else -> "Следующее смс ≈ " + Timex.hhmm(nextPing) + " · " +
                                     PingScheduler.level(settings.pingIntensity).title.lowercase()
                             }
                             Text(pingText, color = Fx.TextDim, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
                             Chip("Напиши сейчас", onClick = { main.pingNow() }, accent = true)
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            item { Chip("🚀 В тупике (Прорыв)", onClick = { main.newSession(Skills.BREAKTHROUGH) }) }
+                            item { Chip("🌊 Накрыло (SOS)", onClick = { main.newSession(Skills.SOS) }) }
+                            item { Chip("🧭 Аудит состояния", onClick = { main.newSession(Skills.DIAGNOSTIC) }) }
                         }
                     }
                 }
@@ -196,7 +206,7 @@ fun SessionsScreen(main: MainViewModel) {
         ) {
             Icon(Icons.Filled.Add, contentDescription = null, tint = Fx.OnGold)
             Spacer(Modifier.width(8.dp))
-            Text("Новый чат", color = Fx.OnGold, fontWeight = FontWeight.SemiBold)
+            Text("Новый режим", color = Fx.OnGold, fontWeight = FontWeight.SemiBold)
         }
     }
 
@@ -262,7 +272,7 @@ fun SessionsScreen(main: MainViewModel) {
     clearFor?.let { s ->
         ConfirmDialog(
             title = "Очистить «${s.title}»?",
-            text = "Сообщения будут удалены. Досье (слова, ошибки, прогресс) сохранится.",
+            text = "Сообщения будут удалены. Досье (якоря, ловушки, навыки) сохранится.",
             confirm = "Очистить", danger = true,
             onConfirm = { main.clearSession(s.id) },
             onDismiss = { clearFor = null }
@@ -290,7 +300,7 @@ private fun SessionRow(s: SessionEntity, now: Long, onClick: () -> Unit, onLong:
             .padding(horizontal = 12.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (s.isHome) FAvatar(46.dp) else EmojiAvatar(s.emoji, 46.dp)
+        if (s.isHome) AtlasAvatar(46.dp) else EmojiAvatar(s.emoji, 46.dp)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -306,7 +316,7 @@ private fun SessionRow(s: SessionEntity, now: Long, onClick: () -> Unit, onLong:
             val preview = when {
                 s.draft.isNotBlank() -> "Черновик: " + s.draft
                 s.lastPreview.isNotBlank() -> s.lastPreview
-                s.isHome -> "Главный чат: сюда приходят смс"
+                s.isHome -> "Главный канал: сюда приходят СМС от Атласа"
                 else -> Skills.mode(s.mode).hint
             }
             Text(
@@ -349,7 +359,7 @@ private fun SheetLine(text: String, danger: Boolean = false, onClick: () -> Unit
     )
 }
 
-/** Выбор режима новой беседы; для урока — тема, для сценки — ситуация. */
+/** Выбор режима новой беседы; для практики — навык, для репетиции — сложная ситуация. */
 @Composable
 fun NewSessionSheet(mastery: Map<String, Int>, onDismiss: () -> Unit, onPick: (String, String) -> Unit) {
     var step by remember { mutableStateOf("modes") }
@@ -361,11 +371,11 @@ fun NewSessionSheet(mastery: Map<String, Int>, onDismiss: () -> Unit, onPick: (S
         when (step) {
             "topics" -> LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp)) {
                 item {
-                    Text("Тема урока", color = Fx.Text, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 4.dp))
+                    Text("Выбери протокол", color = Fx.Text, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 4.dp))
                     val next = Curriculum.focus(mastery, 1).firstOrNull()
                     if (next != null) {
                         Spacer(Modifier.height(6.dp))
-                        Chip("▶ По программе: ${next.title}", onClick = { onPick(Skills.LESSON, next.id) }, accent = true)
+                        Chip("▶ В фокусе: ${next.title}", onClick = { onPick(Skills.LESSON, next.id) }, accent = true)
                     }
                 }
                 for (block in Curriculum.blocks) {
@@ -386,7 +396,7 @@ fun NewSessionSheet(mastery: Map<String, Int>, onDismiss: () -> Unit, onPick: (S
                         ) {
                             Column(Modifier.weight(1f)) {
                                 Text(t.title, color = Fx.Text, style = MaterialTheme.typography.bodyLarge)
-                                Text(t.de + " · " + t.level, color = Fx.TextDim, style = MaterialTheme.typography.bodySmall)
+                                Text("${t.school} · ${t.stage}", color = Fx.TextDim, style = MaterialTheme.typography.bodySmall)
                             }
                             Text("${mastery[t.id] ?: 0}%", color = Fx.TextDim, style = MaterialTheme.typography.labelMedium)
                         }
@@ -396,7 +406,7 @@ fun NewSessionSheet(mastery: Map<String, Int>, onDismiss: () -> Unit, onPick: (S
 
             "scenarios" -> LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp)) {
                 item {
-                    Text("Сценка", color = Fx.Text, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 8.dp))
+                    Text("Репетиция диалога", color = Fx.Text, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 8.dp))
                 }
                 items(Skills.scenarios, key = { it.id }) { sc ->
                     Row(
@@ -416,7 +426,7 @@ fun NewSessionSheet(mastery: Map<String, Int>, onDismiss: () -> Unit, onPick: (S
 
             else -> LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp)) {
                 item {
-                    Text("Новый чат", color = Fx.Text, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 8.dp))
+                    Text("Запустить режим", color = Fx.Text, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 8.dp))
                 }
                 items(Skills.modes, key = { it.id }) { m ->
                     Row(
