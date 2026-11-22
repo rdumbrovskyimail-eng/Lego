@@ -14,6 +14,8 @@ import com.legode.friedrich.audio.Speaker
 import com.legode.friedrich.audio.VoicePlayer
 import com.legode.friedrich.audio.VoiceRecorder
 import com.legode.friedrich.brain.Brain
+import com.legode.friedrich.brain.Norm
+import com.legode.friedrich.core.Timex
 import com.legode.friedrich.data.Attachment
 import com.legode.friedrich.data.AttachmentStore
 import com.legode.friedrich.data.Repository
@@ -61,9 +63,12 @@ class ChatViewModel @Inject constructor(
     val typing: StateFlow<Boolean> = combine(brain.typing, sessionId) { set, sid -> sid in set }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
+    val streamingMessages: StateFlow<List<String>> = combine(brain.streaming, sessionId) { map, sid ->
+        map[sid] ?: emptyList()
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     val speaking: StateFlow<Boolean> = speaker.speaking
 
-    /** Вложения, прикреплённые к ещё не отправленному сообщению. */
     val pending = mutableStateListOf<Attachment>()
 
     var importing by mutableStateOf(false)
@@ -87,7 +92,7 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    // ───────────────────────── Видимость ─────────────────────────
+    // ───────────────────────── Видимость и черновик ─────────────────────────
 
     fun onVisible(visible: Boolean) {
         val sid = sessionId.value
@@ -106,7 +111,7 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch { repo.sessionDao.setDraft(sid, text) }
     }
 
-    // ───────────────────────── Отправка ─────────────────────────
+    // ───────────────────────── Отправка и режимы ─────────────────────────
 
     fun send(text: String) {
         val sid = sessionId.value
@@ -123,13 +128,10 @@ class ChatViewModel @Inject constructor(
 
     fun retry(messageId: Long) {
         val sid = sessionId.value
-        viewModelScope.launch {
-            repo.messageDao.setStatus(messageId, "ok", "")
-            brain.requestRespond(sid)
-        }
+        if (sid == 0L) return
+        brain.requestRetry(sid, messageId)
     }
 
-    /** Удаляет последний ответ Атласа и просит пересчитать с другим углом подхода. */
     fun regenerate() {
         val sid = sessionId.value
         viewModelScope.launch {
@@ -137,9 +139,45 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    fun toggleSocratic() {
+        val s = session.value ?: return
+        viewModelScope.launch {
+            val next = !s.socraticMode
+            repo.sessionDao.setSocratic(s.id, next)
+            toastFlow.tryEmit(
+                if (next) "Режим тренера (анти-оффлоадинг) включён"
+                else "Режим тренера выключен"
+            )
+        }
+    }
+
     fun delete(messageId: Long) = viewModelScope.launch { repo.deleteMessage(messageId) }
 
     fun toggleStar(m: MessageEntity) = viewModelScope.launch { repo.messageDao.setStar(m.id, !m.starred) }
+
+    fun saveToAnchor(rawText: String) {
+        val clean = Norm.plain(rawText).trim()
+        if (clean.length < 4) return
+        viewModelScope.launch {
+            val added = repo.upsertAnchor(
+                phrase = Norm.truncateWords(clean, 210),
+                why = "Опорная мысль, сохранённая вручную из диалога",
+                source = "Чат с Атласом",
+                trigger = "",
+                origin = "user",
+                now = Timex.now()
+            )
+            toastFlow.tryEmit(if (added) "Сохранено в Якоря силы ⚓" else "Такой якорь уже есть")
+        }
+    }
+
+    fun saveToCard(front: String, back: String) {
+        if (front.isBlank() || back.isBlank()) return
+        viewModelScope.launch {
+            repo.addStandaloneCard(Repository.CardDraft(kind = "recall", front = front, back = back))
+            toastFlow.tryEmit("Карточка добавлена в Тренажёр FSRS 🧬")
+        }
+    }
 
     fun speak(text: String) {
         val s = settings.value
