@@ -4,20 +4,20 @@ import com.legode.friedrich.brain.Curriculum
 import com.legode.friedrich.brain.Norm
 import com.legode.friedrich.brain.Srs
 import com.legode.friedrich.core.Timex
+import com.legode.friedrich.data.db.ActionPlanEntity
+import com.legode.friedrich.data.db.AnchorEntity
 import com.legode.friedrich.data.db.AppDatabase
 import com.legode.friedrich.data.db.DailyEntity
 import com.legode.friedrich.data.db.FactEntity
 import com.legode.friedrich.data.db.JournalEntity
-import com.legode.friedrich.data.db.ListItemEntity
-import com.legode.friedrich.data.db.ListProgress
 import com.legode.friedrich.data.db.MessageEntity
-import com.legode.friedrich.data.db.MistakeEntity
 import com.legode.friedrich.data.db.PingEntity
+import com.legode.friedrich.data.db.PlanProgress
+import com.legode.friedrich.data.db.PlanStepEntity
 import com.legode.friedrich.data.db.ProfileEntity
 import com.legode.friedrich.data.db.SessionEntity
-import com.legode.friedrich.data.db.StudyListEntity
-import com.legode.friedrich.data.db.TopicProgressEntity
-import com.legode.friedrich.data.db.VocabEntity
+import com.legode.friedrich.data.db.SkillProgressEntity
+import com.legode.friedrich.data.db.TrapEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -26,17 +26,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.max
 
-/** Все операции с базой: переписка и досье ученика. */
+/** Все операции с базой: переписка и психо-эмоциональное досье пользователя. */
 class Repository(private val db: AppDatabase, private val attachments: AttachmentStore) {
 
     val sessionDao = db.sessionDao()
     val messageDao = db.messageDao()
     val pingDao = db.pingDao()
     val profileDao = db.profileDao()
-    val vocabDao = db.vocabDao()
-    val listDao = db.listDao()
-    val mistakeDao = db.mistakeDao()
-    val topicDao = db.topicDao()
+    val anchorDao = db.anchorDao()
+    val planDao = db.planDao()
+    val trapDao = db.trapDao()
+    val skillDao = db.skillDao()
     val factDao = db.factDao()
     val journalDao = db.journalDao()
     val dailyDao = db.dailyDao()
@@ -51,19 +51,19 @@ class Repository(private val db: AppDatabase, private val attachments: Attachmen
         val now = Timex.now()
         val id = sessionDao.insert(
             SessionEntity(
-                title = "Friedrich", mode = "free", emoji = "🇩🇪", createdAt = now, updatedAt = now,
+                title = "Атлас", mode = "free", emoji = "⚡", createdAt = now, updatedAt = now,
                 pinned = true, isHome = true, titleLocked = true
             )
         )
-        sessionDao.get(id) ?: SessionEntity(id = id, title = "Friedrich", createdAt = now, updatedAt = now, isHome = true)
+        sessionDao.get(id) ?: SessionEntity(id = id, title = "Атлас", createdAt = now, updatedAt = now, isHome = true)
     }
 
-    suspend fun createSession(mode: String, modeArg: String, title: String, emoji: String, listId: Long = 0): Long {
+    suspend fun createSession(mode: String, modeArg: String, title: String, emoji: String, planId: Long = 0): Long {
         val now = Timex.now()
         return sessionDao.insert(
             SessionEntity(
                 title = title, mode = mode, modeArg = modeArg, emoji = emoji,
-                createdAt = now, updatedAt = now, listId = listId
+                createdAt = now, updatedAt = now, planId = planId
             )
         )
     }
@@ -110,12 +110,12 @@ class Repository(private val db: AppDatabase, private val attachments: Attachmen
         }
         sessionDao.touch(sessionId, now, preview)
         val answered = pingDao.markAnswered(sessionId, now)
-        bumpDaily(now) { it.copy(userMsgs = it.userMsgs + 1, pingsAnswered = it.pingsAnswered + answered, xp = it.xp + 2) }
-        registerActivity(now, 2)
+        bumpDaily(now) { it.copy(userMsgs = it.userMsgs + 1, pingsAnswered = it.pingsAnswered + answered, xp = it.xp + 3) }
+        registerActivity(now, 3)
         return id
     }
 
-    suspend fun addFriedrichMessage(
+    suspend fun addAtlasMessage(
         sessionId: Long,
         text: String,
         kind: String,
@@ -127,13 +127,13 @@ class Repository(private val db: AppDatabase, private val attachments: Attachmen
         val quickJson = if (quick.isEmpty()) "" else JSONArray(quick).toString()
         val id = messageDao.insert(
             MessageEntity(
-                sessionId = sessionId, role = ROLE_FRIEDRICH, text = text, createdAt = now,
+                sessionId = sessionId, role = ROLE_ATLAS, text = text, createdAt = now,
                 kind = kind, quickReplies = quickJson, meta = meta
             )
         )
         sessionDao.touch(sessionId, now, Norm.oneLine(text, 90))
         if (countUnread) sessionDao.addUnread(sessionId, 1)
-        bumpDaily(now) { it.copy(friedrichMsgs = it.friedrichMsgs + 1) }
+        bumpDaily(now) { it.copy(atlasMsgs = it.atlasMsgs + 1) }
         return id
     }
 
@@ -156,8 +156,8 @@ class Repository(private val db: AppDatabase, private val attachments: Attachmen
         sessionDao.update(s.copy(lastPreview = preview))
     }
 
-    /** Удаляет ответы Фридриха после последнего сообщения ученика (для «переспросить»). @return было ли что удалять. */
-    suspend fun deleteTrailingFriedrich(sessionId: Long): Boolean {
+    /** Удаляет ответы Атласа после последнего сообщения пользователя (для «переспросить»). @return было ли что удалять. */
+    suspend fun deleteTrailingAtlas(sessionId: Long): Boolean {
         var removed = false
         for (m in messageDao.recentDesc(sessionId, 12)) {
             if (m.role == ROLE_USER) break
@@ -167,12 +167,21 @@ class Repository(private val db: AppDatabase, private val attachments: Attachmen
         return removed
     }
 
-    suspend fun recordPing(sessionId: Long, messageId: Long, kind: String, source: String, now: Long) {
-        pingDao.insert(PingEntity(firedAt = now, kind = kind, source = source, sessionId = sessionId, messageId = messageId))
+    suspend fun recordPing(sessionId: Long, messageId: Long, kind: String, source: String, kbId: String, now: Long) {
+        pingDao.insert(
+            PingEntity(
+                firedAt = now,
+                kind = kind,
+                source = source,
+                sessionId = sessionId,
+                messageId = messageId,
+                kbId = kbId
+            )
+        )
         bumpDaily(now) { it.copy(pings = it.pings + 1) }
     }
 
-    // ───────────────────────── Профиль и статистика ─────────────────────────
+    // ───────────────────────── Профиль и настроение ─────────────────────────
 
     suspend fun profile(): ProfileEntity {
         profileDao.get()?.let { return it }
@@ -200,7 +209,13 @@ class Repository(private val db: AppDatabase, private val attachments: Attachmen
         return dailyDao.get(day) ?: DailyEntity(day = day)
     }
 
-    /** Учитывает активность: серия дней подряд и очки опыта. */
+    suspend fun recordMood(mood: Int, now: Long = Timex.now()) {
+        if (mood !in 1..10) return
+        updateProfile { it.copy(lastMood = mood) }
+        bumpDaily(now) { it.copy(moodSum = it.moodSum + mood, moodCount = it.moodCount + 1) }
+    }
+
+    /** Учитывает активность: серия дней подряд и очки внутренней силы (XP). */
     suspend fun registerActivity(now: Long, xp: Int) {
         val today = Timex.dayOf(now)
         updateProfile { p ->
@@ -219,169 +234,186 @@ class Repository(private val db: AppDatabase, private val attachments: Attachmen
         bumpDaily(now) { it.copy(xp = it.xp + xp) }
     }
 
-    // ───────────────────────── Темы и уровень ─────────────────────────
+    // ───────────────────────── Навыки и устойчивость ─────────────────────────
 
-    suspend fun masteryMap(): Map<String, Int> = topicDao.all().associate { it.topicId to it.mastery }
+    suspend fun masteryMap(): Map<String, Int> = skillDao.all().associate { it.skillId to it.mastery }
 
-    suspend fun applyTopic(topicId: String, d: Int, now: Long) {
-        if (Curriculum.topic(topicId) == null || d == 0) return
-        val cur = topicDao.get(topicId) ?: TopicProgressEntity(topicId = topicId)
-        topicDao.upsert(
+    suspend fun applySkill(skillId: String, d: Int, now: Long) {
+        if (Curriculum.topic(skillId) == null || d == 0) return
+        val cur = skillDao.get(skillId) ?: SkillProgressEntity(skillId = skillId)
+        skillDao.upsert(
             cur.copy(
                 mastery = Srs.masteryAfter(cur.mastery, d),
                 exposures = cur.exposures + 1,
-                correct = cur.correct + if (d > 0) 1 else 0,
-                wrong = cur.wrong + if (d < 0) 1 else 0,
+                wins = cur.wins + if (d > 0) 1 else 0,
+                slips = cur.slips + if (d < 0) 1 else 0,
                 lastAt = now
             )
         )
     }
 
-    suspend fun setMastery(topicId: String, mastery: Int) {
-        val cur = topicDao.get(topicId) ?: TopicProgressEntity(topicId = topicId)
-        topicDao.upsert(cur.copy(mastery = mastery.coerceIn(0, 100), lastAt = Timex.now()))
+    suspend fun setMastery(skillId: String, mastery: Int) {
+        val cur = skillDao.get(skillId) ?: SkillProgressEntity(skillId = skillId)
+        skillDao.upsert(cur.copy(mastery = mastery.coerceIn(0, 100), lastAt = Timex.now()))
     }
 
     /** Стартовая расстановка по самооценке (не понижает уже набранное). */
     suspend fun seedMastery(seed: Map<String, Int>) {
-        val existing = topicDao.all().associateBy { it.topicId }
+        val existing = skillDao.all().associateBy { it.skillId }
         val rows = seed.mapNotNull { (id, value) ->
             val cur = existing[id]
             when {
-                cur == null -> if (value > 0) TopicProgressEntity(topicId = id, mastery = value) else null
+                cur == null -> if (value > 0) SkillProgressEntity(skillId = id, mastery = value) else null
                 cur.mastery < value -> cur.copy(mastery = value)
                 else -> null
             }
         }
-        if (rows.isNotEmpty()) topicDao.upsertAll(rows)
-        recomputeLevel()
+        if (rows.isNotEmpty()) skillDao.upsertAll(rows)
+        recomputeStage()
     }
 
-    /** Результат теста уровня: поднимает «пол» освоенности тем ниже определённого уровня. */
-    suspend fun applyLevelFloor(level: String) {
-        val floors: Map<String, Int> = when (level) {
-            "A1.1" -> mapOf("A0" to 60)
-            "A1.2" -> mapOf("A0" to 75, "A1.1" to 60)
-            "A1" -> mapOf("A0" to 85, "A1.1" to 75, "A1.2" to 60)
+    /** Результат аудита состояния: поднимает базовый пол освоенности навыков под стадию. */
+    suspend fun applyStageFloor(stage: String) {
+        val floors: Map<String, Int> = when (stage) {
+            "спад" -> mapOf("R0" to 55)
+            "стабильность" -> mapOf("R0" to 75, "R1" to 60)
+            "сила" -> mapOf("R0" to 85, "R1" to 75, "R2" to 60)
             else -> emptyMap()
         }
         if (floors.isEmpty()) return
         val seed = HashMap<String, Int>()
-        for (t in Curriculum.topics) floors[t.level]?.let { seed[t.id] = it }
+        for (t in Curriculum.topics) floors[t.stage]?.let { seed[t.id] = it }
         seedMastery(seed)
     }
 
-    suspend fun recomputeLevel(): String {
+    suspend fun recomputeStage(): String {
         val est = Curriculum.estimate(masteryMap())
         val p = profile()
-        if (p.level != est.label) updateProfile { it.copy(level = est.label) }
+        if (p.stage != est.label) updateProfile { it.copy(stage = est.label) }
         return est.label
     }
 
-    // ───────────────────────── Словарь ─────────────────────────
+    // ───────────────────────── Банк якорей силы ─────────────────────────
 
-    /** @return true, если слово новое. */
-    suspend fun upsertWord(de: String, ru: String, plural: String, example: String, source: String, now: Long): Boolean {
-        val key = Norm.vocabKey(de)
-        if (key.length < 2 || key.length > 70 || ru.isBlank()) return false
-        val existing = vocabDao.byKey(key)
+    /** @return true, если якорь новый. */
+    suspend fun upsertAnchor(
+        phrase: String,
+        why: String,
+        source: String,
+        trigger: String,
+        origin: String,
+        now: Long
+    ): Boolean {
+        val key = Norm.anchorKey(phrase)
+        if (key.length < 4 || why.isBlank()) return false
+        val existing = anchorDao.byKey(key)
         if (existing != null) {
             val patched = existing.copy(
-                plural = existing.plural.ifBlank { plural },
-                example = existing.example.ifBlank { example },
-                de = if (Norm.articleOf(existing.de).isEmpty() && Norm.articleOf(de).isNotEmpty()) de.trim() else existing.de,
+                source = existing.source.ifBlank { source },
+                trigger = existing.trigger.ifBlank { trigger },
                 lastSeenAt = now
             )
-            vocabDao.update(patched)
+            anchorDao.update(patched)
             return false
         }
-        val rowId = vocabDao.insert(
-            VocabEntity(
-                keyNorm = key, de = de.trim(), ru = ru.trim(), plural = plural.trim(), example = example.trim(),
-                source = source, createdAt = now, lastSeenAt = now, dueAt = now + Srs.FIRST_DELAY
+        val rowId = anchorDao.insert(
+            AnchorEntity(
+                keyNorm = key,
+                phrase = phrase.trim(),
+                why = why.trim(),
+                source = source.trim(),
+                trigger = trigger.trim(),
+                origin = origin,
+                createdAt = now,
+                lastSeenAt = now,
+                dueAt = now + Srs.FIRST_DELAY
             )
         )
         if (rowId <= 0L) return false
-        bumpDaily(now) { it.copy(wordsAdded = it.wordsAdded + 1) }
+        bumpDaily(now) { it.copy(anchorsAdded = it.anchorsAdded + 1) }
         return true
     }
 
-    suspend fun gradeVocab(id: Long, result: String, now: Long) {
-        val v = vocabDao.get(id) ?: return
-        val state = Srs.State(v.intervalDays, v.ease, v.reps, v.lapses)
+    suspend fun gradeAnchor(id: Long, result: String, now: Long) {
+        val a = anchorDao.get(id) ?: return
+        val state = Srs.State(a.intervalDays, a.ease, a.reps, a.lapses)
         val next = when (result) {
-            "correct" -> {
-                val step = Srs.onCorrect(state, now)
-                v.copy(
+            "done" -> {
+                val step = Srs.onReinforced(state, now)
+                a.copy(
                     intervalDays = step.state.intervalDays, ease = step.state.ease, reps = step.state.reps,
                     lapses = step.state.lapses, dueAt = step.dueAt, status = step.status,
-                    correct = v.correct + 1, lastSeenAt = now
+                    reinforced = a.reinforced + 1, lastSeenAt = now
                 )
             }
 
-            "wrong" -> {
-                val step = Srs.onWrong(state, now)
-                v.copy(
+            "skipped" -> {
+                val step = Srs.onRelapse(state, now)
+                a.copy(
                     intervalDays = step.state.intervalDays, ease = step.state.ease, reps = step.state.reps,
                     lapses = step.state.lapses, dueAt = step.dueAt, status = step.status,
-                    wrong = v.wrong + 1, lastSeenAt = now
+                    relapses = a.relapses + 1, lastSeenAt = now
                 )
             }
 
-            "partial" -> v.copy(dueAt = now + 30 * Srs.MINUTE, status = "learning", lastSeenAt = now)
+            "partial" -> a.copy(dueAt = now + 3 * Srs.HOUR, status = "active", lastSeenAt = now)
             else -> return
         }
-        vocabDao.update(next)
+        anchorDao.update(next)
     }
 
-    // ───────────────────────── Списки ─────────────────────────
+    // ───────────────────────── Планы прорыва ─────────────────────────
 
-    /** Создаёт список и возвращает id элементов в порядке вставки. */
-    suspend fun createList(title: String, items: List<Pair<String, String>>, sessionId: Long, now: Long): Pair<Long, List<Long>> {
-        val listId = listDao.insertList(StudyListEntity(title = title, createdAt = now, sourceSessionId = sessionId))
-        val rows = items.mapIndexed { i, (de, ru) -> ListItemEntity(listId = listId, de = de, ru = ru, position = i) }
-        val ids = listDao.insertItems(rows)
-        for ((de, ru) in items) {
-            if (ru.isNotBlank() && de.trim().split(' ').size <= 5) upsertWord(de, ru, "", "", "list", now)
-        }
-        return listId to ids
+    /** Создаёт план прорыва и возвращает id шагов по порядку. */
+    suspend fun createPlan(title: String, steps: List<Pair<String, String>>, sessionId: Long, now: Long): Pair<Long, List<Long>> {
+        val planId = planDao.insertPlan(ActionPlanEntity(title = title, createdAt = now, sourceSessionId = sessionId))
+        val rows = steps.mapIndexed { i, (step, why) -> PlanStepEntity(planId = planId, step = step, why = why, position = i) }
+        val ids = planDao.insertSteps(rows)
+        return planId to ids
     }
 
-    suspend fun gradeListItem(id: Long, result: String, now: Long): ListProgress? {
-        val item = listDao.getItem(id) ?: return null
+    suspend fun gradePlanStep(id: Long, result: String, now: Long): PlanProgress? {
+        val item = planDao.getStep(id) ?: return null
         val next = when (result) {
-            "correct" -> item.copy(correct = item.correct + 1, streak = item.streak + 1, lastAt = now)
-            "wrong" -> item.copy(wrong = item.wrong + 1, streak = 0, lastAt = now)
+            "done" -> item.copy(doneCount = item.doneCount + 1, streak = item.streak + 1, lastAt = now)
+            "skipped" -> item.copy(skippedCount = item.skippedCount + 1, streak = 0, lastAt = now)
             "partial" -> item.copy(lastAt = now)
             else -> return null
         }
-        listDao.updateItem(next)
-        vocabDao.byKey(Norm.vocabKey(item.de))?.let { gradeVocab(it.id, result, now) }
-        return listDao.progress(item.listId)
+        planDao.updateStep(next)
+        return planDao.progress(item.planId)
     }
 
-    suspend fun deleteList(listId: Long) {
-        sessionDao.detachList(listId)
-        listDao.deleteItems(listId)
-        listDao.deleteList(listId)
+    suspend fun deletePlan(planId: Long) {
+        sessionDao.detachPlan(planId)
+        planDao.deleteSteps(planId)
+        planDao.deletePlan(planId)
     }
 
-    // ───────────────────────── Ошибки и факты ─────────────────────────
+    // ───────────────────────── Ловушки ума и факты ─────────────────────────
 
-    suspend fun addMistake(bad: String, good: String, topicId: String, why: String, now: Long) {
-        val key = (Norm.looseKey(bad) + ">" + Norm.looseKey(good)).take(240)
-        if (key.length < 5) return
-        val existing = mistakeDao.byKey(key)
+    suspend fun addTrap(thought: String, antidote: String, skillId: String, why: String, now: Long) {
+        val key = Norm.trapKey(thought, antidote)
+        if (key.length < 6) return
+        val existing = trapDao.byKey(key)
         if (existing != null) {
-            mistakeDao.update(
+            trapDao.update(
                 existing.copy(
                     times = existing.times + 1, lastAt = now, resolved = false,
-                    why = existing.why.ifBlank { why }, topicId = existing.topicId.ifBlank { topicId }
+                    why = existing.why.ifBlank { why }, skillId = existing.skillId.ifBlank { skillId }
                 )
             )
         } else {
-            mistakeDao.insert(
-                MistakeEntity(keyNorm = key, bad = bad, good = good, topicId = topicId, why = why, firstAt = now, lastAt = now)
+            trapDao.insert(
+                TrapEntity(
+                    keyNorm = key,
+                    thought = thought,
+                    antidote = antidote,
+                    skillId = skillId,
+                    why = why,
+                    firstAt = now,
+                    lastAt = now
+                )
             )
         }
     }
@@ -406,7 +438,7 @@ class Repository(private val db: AppDatabase, private val attachments: Attachmen
     suspend fun exportSessionText(sessionId: Long): String {
         val s = sessionDao.get(sessionId) ?: return ""
         val sb = StringBuilder()
-        sb.append("Чат «").append(s.title).append("» — Friedrich, наставник немецкого A0–A1\n\n")
+        sb.append("Чат «").append(s.title).append("» — Атлас, психо-эмоциональный союзник\n\n")
         var lastDay = ""
         for (m in messageDao.all(sessionId)) {
             if (m.role == ROLE_INFO) continue
@@ -415,7 +447,7 @@ class Repository(private val db: AppDatabase, private val attachments: Attachmen
                 sb.append("— ").append(day).append(" —\n")
                 lastDay = day
             }
-            val who = if (m.role == ROLE_USER) "Я" else "Friedrich"
+            val who = if (m.role == ROLE_USER) "Я" else "Атлас"
             sb.append('[').append(Timex.hhmm(m.createdAt)).append("] ").append(who).append(": ")
             sb.append(Norm.plain(m.text))
             for (a in Attachment.listFromJson(m.attachments)) sb.append(" [").append(a.label()).append(']')
@@ -429,38 +461,40 @@ class Repository(private val db: AppDatabase, private val attachments: Attachmen
         val p = profile()
         root.put(
             "profile",
-            JSONObject().put("name", p.name).put("level", p.level).put("goal", p.goal).put("interests", p.interests)
-                .put("about", p.about).put("plan", p.plan).put("xp", p.xp).put("streak", p.streak)
-                .put("bestStreak", p.bestStreak)
+            JSONObject().put("name", p.name).put("stage", p.stage).put("goal", p.goal).put("interests", p.interests)
+                .put("about", p.about).put("tactic", p.tactic).put("xp", p.xp).put("streak", p.streak)
+                .put("bestStreak", p.bestStreak).put("lastMood", p.lastMood)
         )
-        val vocab = JSONArray()
-        for (v in vocabDao.newest(100000)) {
-            vocab.put(
-                JSONObject().put("de", v.de).put("ru", v.ru).put("plural", v.plural).put("example", v.example)
-                    .put("status", v.status).put("correct", v.correct).put("wrong", v.wrong)
+        val anchors = JSONArray()
+        for (a in anchorDao.newest(100000)) {
+            anchors.put(
+                JSONObject().put("phrase", a.phrase).put("why", a.why).put("source", a.source)
+                    .put("trigger", a.trigger).put("status", a.status)
+                    .put("reinforced", a.reinforced).put("relapses", a.relapses)
             )
         }
-        root.put("vocab", vocab)
-        val mistakes = JSONArray()
-        for (m in mistakeDao.top(100000)) {
-            mistakes.put(
-                JSONObject().put("bad", m.bad).put("good", m.good).put("topic", m.topicId).put("why", m.why).put("times", m.times)
+        root.put("anchors", anchors)
+        val traps = JSONArray()
+        for (t in trapDao.top(100000)) {
+            traps.put(
+                JSONObject().put("thought", t.thought).put("antidote", t.antidote)
+                    .put("skill", t.skillId).put("why", t.why).put("times", t.times)
             )
         }
-        root.put("mistakes", mistakes)
-        val topics = JSONObject()
-        for (t in topicDao.all()) topics.put(t.topicId, t.mastery)
-        root.put("topics", topics)
+        root.put("traps", traps)
+        val skills = JSONObject()
+        for (s in skillDao.all()) skills.put(s.skillId, s.mastery)
+        root.put("skills", skills)
         val facts = JSONArray()
         for (f in factDao.recent(1000)) facts.put(f.text)
         root.put("facts", facts)
-        val lists = JSONArray()
-        for (l in listDao.lists()) {
-            val items = JSONArray()
-            for (i in listDao.items(l.id)) items.put(JSONObject().put("de", i.de).put("ru", i.ru).put("streak", i.streak))
-            lists.put(JSONObject().put("title", l.title).put("items", items))
+        val plans = JSONArray()
+        for (pl in planDao.plans()) {
+            val steps = JSONArray()
+            for (st in planDao.steps(pl.id)) steps.put(JSONObject().put("step", st.step).put("why", st.why).put("done", st.streak >= 1))
+            plans.put(JSONObject().put("title", pl.title).put("steps", steps))
         }
-        root.put("lists", lists)
+        root.put("plans", plans)
         val sessions = JSONArray()
         for (s in sessionDao.all()) {
             val msgs = JSONArray()
@@ -483,7 +517,7 @@ class Repository(private val db: AppDatabase, private val attachments: Attachmen
 
     companion object {
         const val ROLE_USER = "user"
-        const val ROLE_FRIEDRICH = "friedrich"
+        const val ROLE_ATLAS = "atlas"
         const val ROLE_INFO = "info"
     }
 }
