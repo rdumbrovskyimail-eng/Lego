@@ -66,6 +66,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
@@ -114,7 +115,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -123,6 +123,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.legode.friedrich.brain.Norm
+import com.legode.friedrich.brain.Persona
 import com.legode.friedrich.brain.Skills
 import com.legode.friedrich.core.Timex
 import com.legode.friedrich.core.int
@@ -138,9 +139,9 @@ import com.legode.friedrich.ui.Screen
 import com.legode.friedrich.ui.common.Chip
 import com.legode.friedrich.ui.common.ConfirmDialog
 import com.legode.friedrich.ui.common.EmojiAvatar
-import com.legode.friedrich.ui.common.FAvatar
 import com.legode.friedrich.ui.common.InputDialog
 import com.legode.friedrich.ui.common.MarkdownText
+import com.legode.friedrich.ui.theme.AtlasAvatar
 import com.legode.friedrich.ui.theme.Fx
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -158,15 +159,13 @@ private sealed class ChatRow {
     }
 }
 
-private val UMLAUTS = listOf("ä", "ö", "ü", "ß", "Ä", "Ö", "Ü")
-
 @Composable
 fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
     val vm: ChatViewModel = viewModel(key = "chat-$sessionId")
     val session by vm.session.collectAsStateWithLifecycle()
     val messages by vm.messages.collectAsStateWithLifecycle()
     val typing by vm.typing.collectAsStateWithLifecycle()
-    val settings by vm.settings.flow.collectAsStateWithLifecycle()
+    val speaking by vm.speaking.collectAsStateWithLifecycle()
     val playing by vm.player.playing.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
@@ -180,7 +179,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
 
     var menuOpen by remember { mutableStateOf(false) }
     var attachOpen by remember { mutableStateOf(false) }
-    var listDialog by remember { mutableStateOf(false) }
+    var planDialog by remember { mutableStateOf(false) }
     var renameOpen by remember { mutableStateOf(false) }
     var clearConfirm by remember { mutableStateOf(false) }
     var deleteConfirm by remember { mutableStateOf(false) }
@@ -189,7 +188,6 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
     var viewImage by remember { mutableStateOf<String?>(null) }
     var cameraFile by remember { mutableStateOf<File?>(null) }
 
-    // ── привязка к сессии, видимость, черновик ──
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, sessionId) {
         vm.bind(sessionId)
@@ -212,6 +210,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
             vm.saveDraft(latestInput.text)
             vm.finishRecording(false)
             vm.player.stop()
+            vm.stopSpeaking()
         }
     }
 
@@ -225,7 +224,6 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
         }
     }
 
-    // ── «Поделиться» из другого приложения ──
     LaunchedEffect(main.shared) {
         val p = main.shared
         if (p != null) {
@@ -239,7 +237,6 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
         vm.toasts.collectLatest { msg -> Toast.makeText(context, msg, Toast.LENGTH_LONG).show() }
     }
 
-    // ── выбор файлов, камера, микрофон ──
     val pickImages = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(6)) { uris ->
         vm.addUris(uris)
     }
@@ -258,7 +255,6 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
         else Toast.makeText(context, "Без доступа к микрофону голосовые не записать", Toast.LENGTH_LONG).show()
     }
 
-    // ── строки ленты ──
     val rows = remember(messages) {
         val out = ArrayList<ChatRow>(messages.size + 8)
         var prevDay = ""
@@ -274,13 +270,13 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
     }
     val lastMessage = messages.lastOrNull()
     val quick = remember(lastMessage) {
-        if (lastMessage != null && lastMessage.role == Repository.ROLE_FRIEDRICH) parseStringList(lastMessage.quickReplies)
+        if (lastMessage != null && lastMessage.role == Repository.ROLE_ATLAS) parseStringList(lastMessage.quickReplies)
         else emptyList()
     }
-    val lastFriedrichId = remember(messages) {
-        messages.lastOrNull { it.role == Repository.ROLE_FRIEDRICH }?.id ?: 0L
+    val lastAtlasId = remember(messages) {
+        messages.lastOrNull { it.role == Repository.ROLE_ATLAS }?.id ?: 0L
     }
-    val canRegenerate = lastMessage != null && lastMessage.role == Repository.ROLE_FRIEDRICH && !typing &&
+    val canRegenerate = lastMessage != null && lastMessage.role == Repository.ROLE_ATLAS && !typing &&
         messages.any { it.role == Repository.ROLE_USER }
 
     val showJump by remember { derivedStateOf { listState.firstVisibleItemIndex > 3 } }
@@ -288,12 +284,6 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
         if (listState.firstVisibleItemIndex <= 3 || lastMessage?.role == Repository.ROLE_USER) {
             listState.animateScrollToItem(0)
         }
-    }
-
-    fun insert(s: String) {
-        val sel = input.selection
-        val text = input.text.replaceRange(sel.min, sel.max, s)
-        input = TextFieldValue(text, TextRange(sel.min + s.length))
     }
 
     fun sendNow() {
@@ -324,25 +314,31 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад", tint = Fx.Text)
             }
             val s = session
-            if (s == null || s.isHome) FAvatar(38.dp) else EmojiAvatar(s.emoji, 38.dp)
+            if (s == null || s.isHome) AtlasAvatar(38.dp) else EmojiAvatar(s.emoji, 38.dp)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    if (s == null || s.isHome) "Friedrich" else s.title,
+                    if (s == null || s.isHome) Persona.NAME else s.title,
                     color = Fx.Text, style = MaterialTheme.typography.titleMedium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
                 val sub = when {
-                    typing -> "печатает…"
+                    typing -> "разбирает и пишет…"
+                    speaking -> "озвучивает вслух…"
                     s == null -> ""
-                    s.listId != 0L -> "📋 отработка списка"
+                    s.planId != 0L -> "📋 активный план прорыва"
                     s.mode != Skills.FREE -> Skills.label(s.mode, s.modeArg)
-                    else -> "наставник немецкого · A0–A1"
+                    else -> "психо-эмоциональный союзник"
                 }
                 Text(
-                    sub, color = if (typing) Fx.Gold else Fx.TextDim,
+                    sub, color = if (typing || speaking) Fx.Gold else Fx.TextDim,
                     style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
+            }
+            if (speaking) {
+                IconButton(onClick = { vm.stopSpeaking() }) {
+                    Icon(Icons.Filled.Stop, contentDescription = "Остановить озвучку", tint = Fx.Gold)
+                }
             }
             Box {
                 IconButton(onClick = { menuOpen = true }) {
@@ -354,7 +350,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                         main.newSession(Skills.FREE)
                     })
                     if (canRegenerate) {
-                        DropdownMenuItem(text = { Text("Переспросить (другой ответ)") }, onClick = {
+                        DropdownMenuItem(text = { Text("Переспросить (другой угол)") }, onClick = {
                             menuOpen = false
                             vm.regenerate()
                         })
@@ -365,10 +361,10 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                             renameOpen = true
                         })
                     }
-                    if ((session?.listId ?: 0L) != 0L) {
-                        DropdownMenuItem(text = { Text("Остановить отработку списка") }, onClick = {
+                    if ((session?.planId ?: 0L) != 0L) {
+                        DropdownMenuItem(text = { Text("Снять активный план") }, onClick = {
                             menuOpen = false
-                            vm.detachList()
+                            vm.detachPlan()
                         })
                     }
                     DropdownMenuItem(text = { Text("Экспорт / поделиться") }, onClick = {
@@ -384,7 +380,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                             }
                         }
                     })
-                    DropdownMenuItem(text = { Text("Справочник A0–A1") }, onClick = {
+                    DropdownMenuItem(text = { Text("Атлас практик и база") }, onClick = {
                         menuOpen = false
                         main.open(Screen.Reference(null))
                     })
@@ -440,10 +436,10 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                         .padding(32.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    FAvatar(64.dp)
+                    AtlasAvatar(64.dp)
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        "Напиши Фридриху — по-русски или по-немецки.\nМожно прислать список слов, фото учебника или голосовое.",
+                        "Напиши честно, что происходит или где застрял.\nМожно отправить текст, голосовой выплеск, скрин переписки или список проблем.",
                         color = Fx.TextDim, textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -499,18 +495,6 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    items(UMLAUTS) { u ->
-                        Box(
-                            Modifier
-                                .size(width = 34.dp, height = 32.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(Fx.CardHigh)
-                                .clickable { insert(u) },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(u, color = Fx.Gold, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-                        }
-                    }
                     items(Skills.quickCommands) { c -> Chip(c.label, onClick = { vm.send(c.text) }) }
                 }
             }
@@ -537,7 +521,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        "Запись " + Timex.duration(tick - vm.recordStartedAt) + " · говори по-немецки",
+                        "Запись " + Timex.duration(tick - vm.recordStartedAt) + " · говори как есть",
                         color = Fx.Text, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium
                     )
                     TextButton(onClick = { vm.finishRecording(false) }) { Text("Отмена", color = Fx.TextDim) }
@@ -570,7 +554,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                             .padding(horizontal = 14.dp, vertical = 11.dp)
                     ) {
                         if (input.text.isEmpty()) {
-                            Text("Сообщение…", color = Fx.TextFaint, style = MaterialTheme.typography.bodyLarge)
+                            Text("Что происходит сейчас…", color = Fx.TextFaint, style = MaterialTheme.typography.bodyLarge)
                         }
                         BasicTextField(
                             value = input,
@@ -621,14 +605,14 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
             containerColor = Fx.Card
         ) {
             Column(Modifier.padding(bottom = 24.dp)) {
-                SheetAction(Icons.Filled.Image, "Фото из галереи", "страница учебника, упражнение, вывеска") {
+                SheetAction(Icons.Filled.Image, "Скрин или фото", "переписка, заметки, дневник, ситуация") {
                     attachOpen = false
                     try {
                         pickImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     } catch (_: Throwable) {
                     }
                 }
-                SheetAction(Icons.Filled.PhotoCamera, "Камера", "сфотографировать и спросить") {
+                SheetAction(Icons.Filled.PhotoCamera, "Камера", "снять страницу или рукописную запись") {
                     attachOpen = false
                     try {
                         val target = vm.newCameraTarget()
@@ -650,24 +634,24 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                     } catch (_: Throwable) {
                     }
                 }
-                SheetAction(Icons.Filled.TextFields, "Список слов или фраз", "вставить текстом — Friedrich сохранит и отработает") {
+                SheetAction(Icons.Filled.TextFields, "Выгрузка проблем в план", "вставь списком — Атлас разложит по шагам") {
                     attachOpen = false
-                    listDialog = true
+                    planDialog = true
                 }
             }
         }
     }
 
-    if (listDialog) {
+    if (planDialog) {
         InputDialog(
-            title = "Список для отработки",
-            hint = "Каждое слово или предложение — с новой строки. Можно с переводом: «der Tisch — стол». Чего не хватает, Friedrich допишет сам.",
+            title = "Выгрузить в план прорыва",
+            hint = "Напиши всё, что давит, или список дел с новой строки. Атлас отделит главное, соберёт план и доведёт до конца.",
             multiline = true,
             confirm = "Отправить",
             onConfirm = { text ->
-                vm.send("📋 Вот мой список для отработки. Сохрани его и давай тренировать, пока не выучу:\n$text")
+                vm.send("📋 Разложи это в конкретный пошаговый план прорыва и будем отрабатывать шаг за шагом:\n$text")
             },
-            onDismiss = { listDialog = false }
+            onDismiss = { planDialog = false }
         )
     }
 
@@ -684,7 +668,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                         actionFor = null
                         Toast.makeText(context, "Скопировано", Toast.LENGTH_SHORT).show()
                     }
-                    SheetAction(Icons.Filled.VolumeUp, "Озвучить немецкий", "") {
+                    SheetAction(Icons.Filled.VolumeUp, "Озвучить вслух", "дыхательные паузы читаются автоматически") {
                         vm.speak(m.text)
                         actionFor = null
                     }
@@ -700,8 +684,8 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                     vm.toggleStar(m)
                     actionFor = null
                 }
-                if (m.role == Repository.ROLE_FRIEDRICH && m.id == lastFriedrichId && canRegenerate) {
-                    SheetAction(Icons.Filled.Refresh, "Переспросить (другой ответ)", "") {
+                if (m.role == Repository.ROLE_ATLAS && m.id == lastAtlasId && canRegenerate) {
+                    SheetAction(Icons.Filled.Refresh, "Переспросить (другой угол)", "") {
                         vm.regenerate()
                         actionFor = null
                     }
@@ -747,7 +731,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
     if (clearConfirm) {
         ConfirmDialog(
             title = "Очистить историю?",
-            text = "Все сообщения этого чата будут удалены. Досье (слова, ошибки, прогресс) сохранится.",
+            text = "Сообщения этого чата будут удалены. Досье (якоря, ловушки, навыки, динамика) сохранится.",
             confirm = "Очистить", danger = true,
             onConfirm = { vm.clear() },
             onDismiss = { clearConfirm = false }
@@ -838,16 +822,28 @@ private data class MetaChip(val text: String, val color: Color)
 private fun metaChips(m: MessageEntity): List<MetaChip> {
     val o = parseObjectOrNull(m.meta) ?: return emptyList()
     val out = ArrayList<MetaChip>()
-    when (o.str("result")) {
-        "correct" -> out.add(MetaChip("✓ верно", Fx.Green))
-        "partial" -> out.add(MetaChip("≈ почти", Fx.Gold))
-        "wrong" -> out.add(MetaChip("✗ повторим", Fx.Red))
+    val mood = o.int("mood")
+    val emotion = o.str("emotion")
+    if (mood > 0) {
+        val c = when {
+            mood >= 7 -> Fx.Green
+            mood >= 4 -> Fx.Gold
+            else -> Fx.Red
+        }
+        out.add(MetaChip(if (emotion.isNotEmpty()) "$emotion · $mood/10" else "состояние $mood/10", c))
+    } else if (emotion.isNotEmpty()) {
+        out.add(MetaChip(emotion, Fx.TextDim))
     }
-    val words = o.int("words")
-    if (words > 0) out.add(MetaChip("+$words в словарь", Fx.Blue))
-    val fixes = o.int("fixes")
-    if (fixes > 0) out.add(MetaChip("✏️ $fixes", Fx.TextDim))
-    if (o.str("source") == "offline") out.add(MetaChip("офлайн", Fx.TextFaint))
+    when (o.str("result")) {
+        "done" -> out.add(MetaChip("✓ шаг закрыт", Fx.Green))
+        "partial" -> out.add(MetaChip("≈ сдвиг", Fx.Gold))
+        "skipped" -> out.add(MetaChip("↻ дожмём", Fx.Red))
+    }
+    val anchors = o.int("anchors")
+    if (anchors > 0) out.add(MetaChip("+$anchors якорь", Fx.Blue))
+    val traps = o.int("traps")
+    if (traps > 0) out.add(MetaChip("🪤 $traps", Fx.TextDim))
+    if (o.str("source") == "offline") out.add(MetaChip("офлайн-база", Fx.TextFaint))
     return out
 }
 
