@@ -5,59 +5,72 @@ import com.legode.friedrich.data.db.SessionEntity
 import org.json.JSONObject
 
 /**
- * Применяет служебные поля ответа Фридриха к базе знаний об ученике:
- * оценки ответов → интервальные повторения, новые слова → словарь, ошибки → журнал ошибок,
- * практика → освоенность тем и уровень, факты → память, присланный материал → списки для отработки.
+ * Применяет служебную аналитику из ответа Атласа к базе знаний пользователя:
+ *  • балл настроения (mood) и эмоция → дневная траектория и профиль;
+ *  • оценка выполнения шага / якоря → интервальное подкрепление (SRS) и прогресс плана;
+ *  • anchors → личный банк якорей силы;
+ *  • traps → журнал когнитивных ловушек ума;
+ *  • skills → освоенность психологических навыков;
+ *  • facts / profile / plan → долговременная память и планы прорыва.
  */
 class MemoryEngine(private val repo: Repository) {
 
     data class Delta(
+        val mood: Int = 0,
+        val emotion: String = "",
         val result: String = "none",
-        val wordsAdded: Int = 0,
-        val fixes: Int = 0,
-        val listCreated: String = "",
-        val listItems: Int = 0,
-        val listFinished: String = "",
+        val anchorsAdded: Int = 0,
+        val trapsLogged: Int = 0,
+        val planCreated: String = "",
+        val planSteps: Int = 0,
+        val planFinished: String = "",
         val newAskedRef: String = "",
-        val newListId: Long = -1L,
-        val levelUp: String = ""
+        val newPlanId: Long = -1L,
+        val stageUp: String = ""
     ) {
-        /** Компактный JSON для «чипов» под сообщением: что Friedrich запомнил на этом ходу. */
+        /** Компактный JSON для «чипов» под сообщением в чате. */
         fun toMeta(): String {
             val o = JSONObject()
+            if (mood > 0) o.put("mood", mood)
+            if (emotion.isNotEmpty()) o.put("emotion", emotion)
             if (result != "none") o.put("result", result)
-            if (wordsAdded > 0) o.put("words", wordsAdded)
-            if (fixes > 0) o.put("fixes", fixes)
-            if (listCreated.isNotEmpty()) o.put("list", listCreated).put("listItems", listItems)
-            if (listFinished.isNotEmpty()) o.put("listDone", listFinished)
-            if (levelUp.isNotEmpty()) o.put("level", levelUp)
+            if (anchorsAdded > 0) o.put("anchors", anchorsAdded)
+            if (trapsLogged > 0) o.put("traps", trapsLogged)
+            if (planCreated.isNotEmpty()) o.put("plan", planCreated).put("planSteps", planSteps)
+            if (planFinished.isNotEmpty()) o.put("planDone", planFinished)
+            if (stageUp.isNotEmpty()) o.put("stage", stageUp)
             return if (o.length() == 0) "" else o.toString()
         }
     }
 
     suspend fun apply(session: SessionEntity, reply: Reply, now: Long): Delta {
-        var listId = session.listId
-        var listFinished = ""
-        val levelBefore = repo.profile().level
+        var planId = session.planId
+        var planFinished = ""
+        val stageBefore = repo.profile().stage
 
-        // 1. Оценка ответа на ранее заданный элемент.
+        // 1. Фиксируем состояние и эмоцию.
+        if (reply.mood in 1..10) {
+            repo.recordMood(reply.mood, now)
+        }
+
+        // 2. Оценка ответа / выполнения по последнему заданному элементу.
         var graded = "none"
         if (session.askedRef.isNotEmpty() && reply.result != "none") {
             val id = session.askedRef.drop(1).toLongOrNull()
             if (id != null) {
                 when (session.askedRef.first()) {
-                    'V' -> {
-                        repo.gradeVocab(id, reply.result, now)
+                    'A' -> {
+                        repo.gradeAnchor(id, reply.result, now)
                         graded = reply.result
                     }
 
-                    'L' -> {
-                        val progress = repo.gradeListItem(id, reply.result, now)
+                    'S' -> {
+                        val progress = repo.gradePlanStep(id, reply.result, now)
                         graded = reply.result
-                        if (progress != null && progress.total > 0 && progress.mastered >= progress.total &&
-                            progress.listId == listId
+                        if (progress != null && progress.total > 0 && progress.done >= progress.total &&
+                            progress.planId == planId
                         ) {
-                            listFinished = repo.listDao.getList(listId)?.title ?: "список"
+                            planFinished = repo.planDao.getPlan(planId)?.title ?: "план"
                         }
                     }
                 }
@@ -65,34 +78,35 @@ class MemoryEngine(private val repo: Repository) {
         } else if (reply.result != "none") {
             graded = reply.result
         }
+
         when (graded) {
-            "correct" -> {
-                repo.addXp(5, now)
-                repo.bumpDaily(now) { it.copy(correct = it.correct + 1) }
+            "done" -> {
+                repo.addXp(10, now)
+                repo.bumpDaily(now) { it.copy(stepsDone = it.stepsDone + 1) }
             }
 
-            "partial" -> repo.addXp(2, now)
-            "wrong" -> repo.bumpDaily(now) { it.copy(wrong = it.wrong + 1) }
+            "partial" -> repo.addXp(4, now)
+            "skipped" -> repo.bumpDaily(now) { it.copy(slips = it.slips + 1) }
         }
 
-        // 2. Новые слова.
-        var added = 0
-        for (w in reply.words) {
-            if (repo.upsertWord(w.de, w.ru, w.plural, w.example, "friedrich", now)) added++
+        // 3. Новые якоря силы.
+        var addedAnchors = 0
+        for (a in reply.anchors) {
+            if (repo.upsertAnchor(a.phrase, a.why, a.source, a.trigger, "atlas", now)) addedAnchors++
         }
 
-        // 3. Ошибки (и минус соответствующей теме, если модель сама её не отметила).
-        val topicIds = reply.topics.map { it.id }.toSet()
-        for (f in reply.fixes) {
-            repo.addMistake(f.bad, f.good, f.topicId, f.why, now)
-            if (f.topicId.isNotEmpty() && f.topicId !in topicIds) repo.applyTopic(f.topicId, -1, now)
+        // 4. Когнитивные ловушки (и лёгкий штраф навыку, если модель сама не отметила его).
+        val skillIds = reply.skills.map { it.id }.toSet()
+        for (t in reply.traps) {
+            repo.addTrap(t.thought, t.antidote, t.skillId, t.why, now)
+            if (t.skillId.isNotEmpty() && t.skillId !in skillIds) repo.applySkill(t.skillId, -1, now)
         }
 
-        // 4. Практика по темам.
-        for (t in reply.topics) repo.applyTopic(t.id, t.d, now)
+        // 5. Практика навыков устойчивости.
+        for (s in reply.skills) repo.applySkill(s.id, s.d, now)
 
-        // 5. Факты и профиль.
-        for (fact in reply.facts) repo.addFact(fact, "friedrich", now)
+        // 6. Факты и профиль.
+        for (fact in reply.facts) repo.addFact(fact, "atlas", now)
         if (reply.name.isNotBlank() || reply.goal.isNotBlank() || reply.interests.isNotBlank()) {
             repo.updateProfile { p ->
                 p.copy(
@@ -102,70 +116,72 @@ class MemoryEngine(private val repo: Repository) {
                 )
             }
         }
-        if (reply.level.isNotEmpty() && session.mode == Skills.PLACEMENT) repo.applyLevelFloor(reply.level)
+        if (reply.stage.isNotEmpty() && session.mode == Skills.DIAGNOSTIC) repo.applyStageFloor(reply.stage)
 
-        // 6. Материал ученика → список для отработки.
+        // 7. Новый план прорыва.
         var createdTitle = ""
         var createdCount = 0
         var newIds: List<Long> = emptyList()
-        val note = reply.list
-        if (note != null && note.items.isNotEmpty()) {
-            val created = repo.createList(note.title, note.items.map { it.de to it.ru }, session.id, now)
-            listId = created.first
+        val plan = reply.plan
+        if (plan != null && plan.steps.isNotEmpty()) {
+            val created = repo.createPlan(plan.title, plan.steps.map { it.step to it.why }, session.id, now)
+            planId = created.first
             newIds = created.second
-            createdTitle = note.title
-            createdCount = note.items.size
-            listFinished = ""
+            createdTitle = plan.title
+            createdCount = plan.steps.size
+            planFinished = ""
         }
 
-        // 7. Завершение списка.
-        if (reply.listDone && listId != 0L && createdTitle.isEmpty() && listFinished.isEmpty()) {
-            listFinished = repo.listDao.getList(listId)?.title ?: "список"
+        // 8. Завершение активного плана.
+        if (reply.planDone && planId != 0L && createdTitle.isEmpty() && planFinished.isEmpty()) {
+            planFinished = repo.planDao.getPlan(planId)?.title ?: "план"
         }
-        if (listFinished.isNotEmpty()) {
-            listId = 0L
-            repo.addXp(20, now)
+        if (planFinished.isNotEmpty()) {
+            planId = 0L
+            repo.addXp(25, now)
         }
 
-        // 8. Что Friedrich спросил теперь.
-        val asked = resolveAsked(reply.asked, newIds, listId)
+        // 9. Ссылка на новый шаг / якорь.
+        val asked = resolveAsked(reply.asked, newIds, planId)
 
-        val levelAfter = repo.recomputeLevel()
+        val stageAfter = repo.recomputeStage()
         return Delta(
+            mood = reply.mood,
+            emotion = reply.emotion,
             result = graded,
-            wordsAdded = added,
-            fixes = reply.fixes.size,
-            listCreated = createdTitle,
-            listItems = createdCount,
-            listFinished = listFinished,
+            anchorsAdded = addedAnchors,
+            trapsLogged = reply.traps.size,
+            planCreated = createdTitle,
+            planSteps = createdCount,
+            planFinished = planFinished,
             newAskedRef = asked,
-            newListId = listId,
-            levelUp = if (levelAfter != levelBefore && rank(levelAfter) > rank(levelBefore)) levelAfter else ""
+            newPlanId = planId,
+            stageUp = if (stageAfter != stageBefore && rank(stageAfter) > rank(stageBefore)) stageAfter else ""
         )
     }
 
-    private fun rank(level: String): Int = when (level) {
-        "A0" -> 0
-        "A1.1" -> 1
-        "A1.2" -> 2
-        "A1" -> 3
+    private fun rank(stage: String): Int = when (stage) {
+        "истощение" -> 0
+        "спад" -> 1
+        "стабильность" -> 2
+        "сила" -> 3
         else -> 0
     }
 
-    /** Проверяет ссылку на заданный элемент; "N3" превращает в настоящий id элемента нового списка. */
-    private suspend fun resolveAsked(raw: String, newIds: List<Long>, listId: Long): String {
+    /** Проверяет ссылку на шаг или якорь; "N3" превращает в реальный id шага нового плана. */
+    private suspend fun resolveAsked(raw: String, newIds: List<Long>, planId: Long): String {
         if (raw.isEmpty()) return ""
         val n = raw.drop(1).toLongOrNull() ?: return ""
         return when (raw.first()) {
             'N' -> {
                 val idx = (n - 1).toInt()
-                if (idx in newIds.indices) "L${newIds[idx]}" else ""
+                if (idx in newIds.indices) "S${newIds[idx]}" else ""
             }
 
-            'V' -> if (repo.vocabDao.get(n) != null) raw else ""
-            'L' -> {
-                val item = repo.listDao.getItem(n)
-                if (item != null && (listId == 0L || item.listId == listId)) raw else ""
+            'A' -> if (repo.anchorDao.get(n) != null) raw else ""
+            'S' -> {
+                val step = repo.planDao.getStep(n)
+                if (step != null && (planId == 0L || step.planId == planId)) raw else ""
             }
 
             else -> ""
