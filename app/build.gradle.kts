@@ -15,12 +15,12 @@ android {
         minSdk = 28
         targetSdk = 36
 
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "2.0.0"
     }
 
     // Постоянный ключ подписи debug-сборок: APK из разных запусков CI ставятся
-    // поверх друг друга без удаления приложения (база знаний Фридриха сохраняется).
+    // поверх друг друга без удаления приложения (вся база Атласа сохраняется).
     signingConfigs {
         getByName("debug") {
             val stableKeystore = rootProject.file("keystore/friedrich-debug.keystore")
@@ -70,9 +70,14 @@ kotlin {
     }
 }
 
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.10.0")
+    implementation("androidx.biometric:biometric:1.1.0")
 
     val composeBom = platform("androidx.compose:compose-bom:2025.02.00")
     implementation(composeBom)
@@ -82,19 +87,15 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    // ViewModel и реактивные состояния в Compose
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
 
-    // Dagger Hilt (DI)
     implementation("com.google.dagger:hilt-android:2.57.2")
     ksp("com.google.dagger:hilt-android-compiler:2.57.2")
 
-    // Room Database (локальная база знаний Фридриха)
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
 
-    // WorkManager: фоновые «пинги», ответы из шторки уведомлений, сторожевой таймер
     implementation("androidx.work:work-runtime-ktx:2.10.0")
 }
