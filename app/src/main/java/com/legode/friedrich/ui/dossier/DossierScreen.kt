@@ -58,8 +58,8 @@ import com.legode.friedrich.brain.Curriculum
 import com.legode.friedrich.brain.Skills
 import com.legode.friedrich.brain.Topic
 import com.legode.friedrich.core.Timex
-import com.legode.friedrich.data.db.StudyListEntity
-import com.legode.friedrich.data.db.VocabEntity
+import com.legode.friedrich.data.db.ActionPlanEntity
+import com.legode.friedrich.data.db.AnchorEntity
 import com.legode.friedrich.ui.MainViewModel
 import com.legode.friedrich.ui.Screen
 import com.legode.friedrich.ui.common.Chip
@@ -71,10 +71,11 @@ import com.legode.friedrich.ui.common.Pill
 import com.legode.friedrich.ui.common.SectionTitle
 import com.legode.friedrich.ui.common.TopBar
 import com.legode.friedrich.ui.theme.Fx
+import kotlin.math.roundToInt
 
-private val TABS = listOf("Обзор", "Слова", "Ошибки", "Темы", "Списки", "Память")
+private val TABS = listOf("Обзор", "Якоря", "Ловушки", "Навыки", "Планы", "Память")
 
-/** Досье: всё, что Friedrich знает об ученике. Здесь это можно посмотреть и поправить. */
+/** Психологическое досье: динамика состояния, якоря силы, ловушки ума, навыки и планы прорыва. */
 @Composable
 fun DossierScreen(main: MainViewModel, onBack: () -> Unit) {
     var tab by remember { mutableIntStateOf(0) }
@@ -83,7 +84,7 @@ fun DossierScreen(main: MainViewModel, onBack: () -> Unit) {
             .fillMaxSize()
             .background(Fx.Ink)
     ) {
-        TopBar(title = "Досье", subtitle = "что Friedrich знает о тебе", onBack = onBack)
+        TopBar(title = "Досье", subtitle = "твой профиль устойчивости и триггеры", onBack = onBack)
         ScrollableTabRow(
             selectedTabIndex = tab,
             containerColor = Fx.Panel,
@@ -106,10 +107,10 @@ fun DossierScreen(main: MainViewModel, onBack: () -> Unit) {
         ) {
             when (tab) {
                 0 -> OverviewTab(main)
-                1 -> WordsTab(main)
-                2 -> MistakesTab(main)
-                3 -> TopicsTab(main)
-                4 -> ListsTab(main)
+                1 -> AnchorsTab(main)
+                2 -> TrapsTab(main)
+                3 -> SkillsTab(main)
+                4 -> PlansTab(main)
                 else -> MemoryTab(main)
             }
         }
@@ -123,15 +124,15 @@ private val PAD = PaddingValues(horizontal = 12.dp, vertical = 12.dp)
 @Composable
 private fun OverviewTab(main: MainViewModel) {
     val profile by main.profile.collectAsStateWithLifecycle()
-    val topics by main.topics.collectAsStateWithLifecycle()
-    val vocab by main.vocab.collectAsStateWithLifecycle()
+    val skills by main.skills.collectAsStateWithLifecycle()
+    val anchors by main.anchors.collectAsStateWithLifecycle()
     val daily by main.daily.collectAsStateWithLifecycle()
-    val mistakes by main.mistakes.collectAsStateWithLifecycle()
+    val traps by main.traps.collectAsStateWithLifecycle()
     val pings by main.pingCount.collectAsStateWithLifecycle()
     val answered by main.pingAnswered.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
-    val mastery = remember(topics) { topics.associate { it.topicId to it.mastery } }
+    val mastery = remember(skills) { skills.associate { it.skillId to it.mastery } }
     val est = remember(mastery) { Curriculum.estimate(mastery) }
     val now = Timex.now()
     val today = daily.firstOrNull { it.day == Timex.today() }
@@ -148,69 +149,83 @@ private fun OverviewTab(main: MainViewModel) {
                             .background(Fx.Gold),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(est.label, color = Fx.OnGold, fontWeight = FontWeight.Black, style = MaterialTheme.typography.titleMedium)
+                        val badge = if ((profile?.lastMood ?: 0) > 0) "${profile?.lastMood}/10" else est.label.take(4)
+                        Text(badge, color = Fx.OnGold, fontWeight = FontWeight.Black, style = MaterialTheme.typography.titleMedium)
                     }
                     Spacer(Modifier.width(14.dp))
                     Column(Modifier.weight(1f)) {
                         Text(
-                            profile?.name?.takeIf { it.isNotBlank() } ?: "Ученик",
+                            profile?.name?.takeIf { it.isNotBlank() } ?: "Профиль опоры",
                             color = Fx.Text, style = MaterialTheme.typography.titleLarge
                         )
                         Text(
-                            "🔥 серия ${profile?.streak ?: 0} дн (рекорд ${profile?.bestStreak ?: 0}) · ⭐ ${profile?.xp ?: 0} XP",
+                            "Стадия: ${est.label} · 🔥 ${profile?.streak ?: 0} дн (рекорд ${profile?.bestStreak ?: 0}) · ⚡ ${profile?.xp ?: 0} XP",
                             color = Fx.TextDim, style = MaterialTheme.typography.bodySmall
                         )
                     }
                 }
                 Spacer(Modifier.height(14.dp))
-                LevelLine("A0 — база", est.a0)
-                LevelLine("A1.1 — первые шаги", est.a11)
-                LevelLine("A1.2 — уверенный A1", est.a12)
+                LevelLine("R0 · Стабилизация", est.r0)
+                LevelLine("R1 · Взлом ловушек", est.r1)
+                LevelLine("R2 · Смысл и опора", est.r2)
+                LevelLine("R3 · Прорыв и воля", est.r3)
             }
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatBox("Слов", vocab.size.toString(), Modifier.weight(1f))
-                StatBox("Знаю", vocab.count { it.status == "known" }.toString(), Modifier.weight(1f))
-                StatBox("Повторить", vocab.count { it.dueAt <= now }.toString(), Modifier.weight(1f))
-                StatBox("Ошибок", mistakes.count { !it.resolved }.toString(), Modifier.weight(1f))
+                StatBox("Якорей", anchors.size.toString(), Modifier.weight(1f))
+                StatBox("Вживлено", anchors.count { it.status == "core" }.toString(), Modifier.weight(1f))
+                StatBox("Повторить", anchors.count { it.dueAt <= now }.toString(), Modifier.weight(1f))
+                StatBox("Ловушек", traps.count { !it.resolved }.toString(), Modifier.weight(1f))
             }
         }
         item {
             Panel {
                 Text("Сегодня", color = Fx.Text, style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(6.dp))
+                val todayMood = if ((today?.moodCount ?: 0) > 0) {
+                    " · среднее состояние ${(today!!.moodSum.toFloat() / today.moodCount).roundToInt()}/10"
+                } else ""
                 Text(
-                    "Сообщений: ${today?.userMsgs ?: 0} · верно: ${today?.correct ?: 0} · ошибок: ${today?.wrong ?: 0} · новых слов: ${today?.wordsAdded ?: 0}",
+                    "Сообщений: ${today?.userMsgs ?: 0} · шагов закрыто: ${today?.stepsDone ?: 0} · срывов: ${today?.slips ?: 0}$todayMood",
                     color = Fx.TextDim, style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
-                    "СМС от Фридриха: ${today?.pings ?: 0}, отвечено: ${today?.pingsAnswered ?: 0} · всего за всё время: $answered из $pings",
+                    "СМС от Атласа: ${today?.pings ?: 0}, отвечено: ${today?.pingsAnswered ?: 0} · всего откликов: $answered из $pings",
                     color = Fx.TextDim, style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(Modifier.height(12.dp))
-                Text("Активность за 14 дней", color = Fx.TextFaint, style = MaterialTheme.typography.labelSmall)
+                Text("Состояние (1–10) и активность за 14 дней", color = Fx.TextFaint, style = MaterialTheme.typography.labelSmall)
                 Spacer(Modifier.height(6.dp))
                 val days = remember(daily) { daily.sortedBy { it.day }.takeLast(14) }
                 val peak = (days.maxOfOrNull { it.userMsgs } ?: 0).coerceAtLeast(1)
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .height(56.dp),
+                        .height(58.dp),
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.Bottom
                 ) {
                     if (days.isEmpty()) {
-                        Text("Пока пусто — напиши Фридриху 🙂", color = Fx.TextFaint, style = MaterialTheme.typography.bodySmall)
+                        Text("Пока пусто — напиши Атласу в чат", color = Fx.TextFaint, style = MaterialTheme.typography.bodySmall)
                     }
                     for (d in days) {
-                        val h = (d.userMsgs.toFloat() / peak).coerceIn(0.04f, 1f)
+                        val avgMood = if (d.moodCount > 0) d.moodSum.toFloat() / d.moodCount else 0f
+                        val h = if (avgMood > 0f) (avgMood / 10f).coerceIn(0.12f, 1f)
+                        else (d.userMsgs.toFloat() / peak).coerceIn(0.05f, 1f)
+                        val barColor = when {
+                            avgMood >= 7f -> Fx.Green
+                            avgMood >= 4f -> Fx.Gold
+                            avgMood > 0f -> Fx.Red
+                            d.userMsgs > 0 -> Fx.Blue
+                            else -> Fx.Line
+                        }
                         Box(
                             Modifier
                                 .weight(1f)
                                 .fillMaxHeight(h)
                                 .clip(RoundedCornerShape(4.dp))
-                                .background(if (d.userMsgs > 0) Fx.Gold else Fx.Line)
+                                .background(barColor)
                         )
                     }
                 }
@@ -218,10 +233,10 @@ private fun OverviewTab(main: MainViewModel) {
         }
         item {
             Panel {
-                Text("Дальше по программе", color = Fx.Text, style = MaterialTheme.typography.titleMedium)
+                Text("Следующие навыки для прокачки", color = Fx.Text, style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(6.dp))
                 if (focus.isEmpty()) {
-                    Text("Вся программа A0–A1 освоена. Glückwunsch! 🎓", color = Fx.Green)
+                    Text("Весь методологический атлас освоен на высоком уровне! 🔥", color = Fx.Green)
                 }
                 for (t in focus) {
                     Row(
@@ -237,36 +252,36 @@ private fun OverviewTab(main: MainViewModel) {
                             Meter(mastery[t.id] ?: 0, Modifier.fillMaxWidth(), height = 4.dp)
                         }
                         Spacer(Modifier.width(10.dp))
-                        Pill("урок ▶", Fx.Gold)
+                        Pill("практика ▶", Fx.Gold)
                     }
                 }
             }
         }
         item {
             Panel {
-                Text("План Фридриха", color = Fx.Text, style = MaterialTheme.typography.titleMedium)
+                Text("Стратегический план Атласа", color = Fx.Text, style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    profile?.plan?.takeIf { it.isNotBlank() }
-                        ?: "Плана пока нет. Friedrich составит его сам после нескольких десятков сообщений — или прямо сейчас по кнопке.",
+                    profile?.tactic?.takeIf { it.isNotBlank() }
+                        ?: "Тактический план сформируется автоматически после нескольких диалогов — либо запусти разбор прямо сейчас.",
                     color = Fx.TextDim, style = MaterialTheme.typography.bodyMedium
                 )
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Chip(
-                        if (main.reflecting) "Думаю…" else "🧠 Проанализируй меня",
+                        if (main.reflecting) "Анализирую…" else "🧠 Проанализируй меня",
                         onClick = {
                             main.reflectNow { ok ->
                                 Toast.makeText(
                                     context,
-                                    if (ok) "Готово: заметки и план обновлены" else "Не получилось. Нужны ключ, сеть и хотя бы пара сообщений.",
+                                    if (ok) "Готово: заметки и тактика обновлены" else "Нужны ключ, интернет и хотя бы пара сообщений.",
                                     Toast.LENGTH_LONG
                                 ).show()
                             }
                         },
                         accent = true
                     )
-                    Chip("🧪 Тест уровня", onClick = { main.newSession(Skills.PLACEMENT) })
+                    Chip("🧭 Аудит состояния", onClick = { main.newSession(Skills.DIAGNOSTIC) })
                 }
             }
         }
@@ -276,7 +291,7 @@ private fun OverviewTab(main: MainViewModel) {
 @Composable
 private fun LevelLine(label: String, percent: Int) {
     Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = Fx.TextDim, style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(140.dp))
+        Text(label, color = Fx.TextDim, style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(150.dp))
         Meter(percent, Modifier.weight(1f))
         Spacer(Modifier.width(8.dp))
         Text("$percent%", color = Fx.Text, style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(38.dp))
@@ -297,62 +312,66 @@ private fun StatBox(label: String, value: String, modifier: Modifier = Modifier)
     }
 }
 
-// ───────────────────────── Слова ─────────────────────────
+// ───────────────────────── Якоря силы ─────────────────────────
 
 @Composable
-private fun WordsTab(main: MainViewModel) {
-    val vocab by main.vocab.collectAsStateWithLifecycle()
+private fun AnchorsTab(main: MainViewModel) {
+    val anchors by main.anchors.collectAsStateWithLifecycle()
     val settings by main.settingsFlow.collectAsStateWithLifecycle()
     var filter by remember { mutableIntStateOf(0) }
     var query by remember { mutableStateOf("") }
     var addOpen by remember { mutableStateOf(false) }
-    var deleteFor by remember { mutableStateOf<VocabEntity?>(null) }
+    var deleteFor by remember { mutableStateOf<AnchorEntity?>(null) }
     val now = Timex.now()
 
-    val shown = remember(vocab, filter, query) {
+    val shown = remember(anchors, filter, query) {
         val q = query.trim().lowercase()
-        vocab.filter { v ->
+        anchors.filter { a ->
             val byFilter = when (filter) {
-                1 -> v.dueAt <= now
-                2 -> v.status == "new"
-                3 -> v.status == "learning"
-                4 -> v.status == "known"
+                1 -> a.dueAt <= now
+                2 -> a.status == "new"
+                3 -> a.status == "active"
+                4 -> a.status == "core"
                 else -> true
             }
-            byFilter && (q.isEmpty() || v.de.lowercase().contains(q) || v.ru.lowercase().contains(q))
+            byFilter && (q.isEmpty() ||
+                a.phrase.lowercase().contains(q) ||
+                a.why.lowercase().contains(q) ||
+                a.source.lowercase().contains(q) ||
+                a.trigger.lowercase().contains(q))
         }
     }
 
     LazyColumn(contentPadding = PAD, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Chip("🃏 Повторить с Фридрихом", onClick = { main.newSession(Skills.REVIEW) }, accent = true)
-                Chip("＋ Слово", onClick = { addOpen = true })
+                Chip("⚓ Закрепить с Атласом", onClick = { main.newSession(Skills.REVIEW) }, accent = true)
+                Chip("＋ Якорь", onClick = { addOpen = true })
             }
         }
         item {
             OutlinedTextField(
                 value = query, onValueChange = { query = it },
-                placeholder = { Text("Поиск по словарю", color = Fx.TextFaint) },
+                placeholder = { Text("Поиск по якорям и цитатам", color = Fx.TextFaint) },
                 singleLine = true, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()
             )
         }
         item {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                val labels = listOf("Все ${vocab.size}", "Пора повторить", "Новые", "Учу", "Знаю")
+                val labels = listOf("Все ${anchors.size}", "Пора закрепить", "Новые", "Активные", "Вживлённые")
                 items(labels.size) { i -> Chip(labels[i], onClick = { filter = i }, selected = filter == i) }
             }
         }
         if (shown.isEmpty()) {
             item {
                 Text(
-                    if (vocab.isEmpty()) "Словарь пуст. Friedrich сам добавляет сюда слова из ваших разговоров — или добавь своё."
+                    if (anchors.isEmpty()) "Банк якорей пуст. Сильные фразы и рефреймы из диалогов и базы знаний попадают сюда автоматически."
                     else "Ничего не найдено",
                     color = Fx.TextDim, modifier = Modifier.padding(16.dp)
                 )
             }
         }
-        items(shown, key = { it.id }) { v ->
+        items(shown, key = { it.id }) { a ->
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -361,9 +380,9 @@ private fun WordsTab(main: MainViewModel) {
                     .padding(start = 12.dp, top = 8.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                val dot = when (v.status) {
-                    "known" -> Fx.Green
-                    "learning" -> Fx.Gold
+                val dot = when (a.status) {
+                    "core" -> Fx.Green
+                    "active" -> Fx.Gold
                     else -> Fx.Blue
                 }
                 Box(
@@ -374,85 +393,88 @@ private fun WordsTab(main: MainViewModel) {
                 )
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        v.de + if (v.plural.isNotBlank()) "  ·  " + v.plural else "",
-                        color = Fx.Text, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium
-                    )
-                    Text(v.ru, color = Fx.TextDim, style = MaterialTheme.typography.bodyMedium)
-                    if (v.example.isNotBlank()) {
-                        Text(v.example, color = Fx.TextFaint, style = MaterialTheme.typography.bodySmall)
+                    Text(a.phrase, color = Fx.Text, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                    Text(a.why, color = Fx.TextDim, style = MaterialTheme.typography.bodyMedium)
+                    val meta = listOfNotNull(
+                        a.source.takeIf { it.isNotBlank() },
+                        a.trigger.takeIf { it.isNotBlank() }?.let { "триггер: $it" }
+                    ).joinToString(" · ")
+                    if (meta.isNotBlank()) {
+                        Text(meta, color = Fx.TextFaint, style = MaterialTheme.typography.bodySmall)
                     }
-                    val dueText = if (v.dueAt <= now) "пора повторить" else "повтор через " + Timex.until(v.dueAt, now).removePrefix("≈ ")
+                    val dueText = if (a.dueAt <= now) "пора напомнить" else "повтор через " + Timex.until(a.dueAt, now).removePrefix("≈ ")
                     Text(
-                        "✓${v.correct} ✗${v.wrong} · $dueText",
-                        color = if (v.dueAt <= now) Fx.Blue else Fx.TextFaint, style = MaterialTheme.typography.labelSmall
+                        "✓${a.reinforced} ↻${a.relapses} · $dueText",
+                        color = if (a.dueAt <= now) Fx.Blue else Fx.TextFaint, style = MaterialTheme.typography.labelSmall
                     )
                 }
-                IconButton(onClick = { if (settings.ttsEnabled) main.speaker.speak(v.de, settings.ttsRate) }) {
-                    Icon(Icons.Filled.VolumeUp, contentDescription = "Произнести", tint = Fx.TextDim, modifier = Modifier.size(20.dp))
+                IconButton(onClick = { if (settings.ttsEnabled) main.speaker.speak("${a.phrase}. ${a.why}", settings.ttsRate) }) {
+                    Icon(Icons.Filled.VolumeUp, contentDescription = "Озвучить", tint = Fx.TextDim, modifier = Modifier.size(20.dp))
                 }
-                IconButton(onClick = { deleteFor = v }) {
+                IconButton(onClick = { deleteFor = a }) {
                     Icon(Icons.Filled.Close, contentDescription = "Удалить", tint = Fx.TextFaint, modifier = Modifier.size(18.dp))
                 }
             }
         }
     }
 
-    if (addOpen) AddWordDialog(onAdd = { de, ru -> main.addWord(de, ru) }, onDismiss = { addOpen = false })
-    deleteFor?.let { v ->
+    if (addOpen) AddAnchorDialog(onAdd = { p, w, tr -> main.addAnchor(p, w, "Личный якорь", tr) }, onDismiss = { addOpen = false })
+    deleteFor?.let { a ->
         ConfirmDialog(
-            title = "Удалить «${v.de}»?", text = "Слово исчезнет из словаря и повторений.",
+            title = "Удалить якорь?", text = "«${a.phrase}» исчезнет из повторений.",
             confirm = "Удалить", danger = true,
-            onConfirm = { main.deleteWord(v.id) }, onDismiss = { deleteFor = null }
+            onConfirm = { main.deleteAnchor(a.id) }, onDismiss = { deleteFor = null }
         )
     }
 }
 
 @Composable
-private fun AddWordDialog(onAdd: (String, String) -> Unit, onDismiss: () -> Unit) {
-    var de by remember { mutableStateOf("") }
-    var ru by remember { mutableStateOf("") }
+private fun AddAnchorDialog(onAdd: (String, String, String) -> Unit, onDismiss: () -> Unit) {
+    var phrase by remember { mutableStateOf("") }
+    var why by remember { mutableStateOf("") }
+    var trigger by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Новое слово") },
+        title = { Text("Новый якорь силы") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(de, { de = it }, label = { Text("По-немецки (с артиклем)") }, singleLine = true)
-                OutlinedTextField(ru, { ru = it }, label = { Text("Перевод") }, singleLine = true)
+                OutlinedTextField(phrase, { phrase = it }, label = { Text("Опорная фраза или мысль") }, minLines = 2, maxLines = 4)
+                OutlinedTextField(why, { why = it }, label = { Text("Почему она тебя держит") }, minLines = 2, maxLines = 4)
+                OutlinedTextField(trigger, { trigger = it }, label = { Text("Когда доставать (тревога, апатия…)") }, singleLine = true)
             }
         },
         confirmButton = {
             TextButton(
                 onClick = {
-                    onAdd(de.trim(), ru.trim())
+                    onAdd(phrase.trim(), why.trim(), trigger.trim())
                     onDismiss()
                 },
-                enabled = de.isNotBlank() && ru.isNotBlank()
-            ) { Text("Добавить", color = Fx.Gold) }
+                enabled = phrase.isNotBlank() && why.isNotBlank()
+            ) { Text("Сохранить", color = Fx.Gold) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена", color = Fx.TextDim) } },
         containerColor = Fx.Card
     )
 }
 
-// ───────────────────────── Ошибки ─────────────────────────
+// ───────────────────────── Ловушки ума ─────────────────────────
 
 @Composable
-private fun MistakesTab(main: MainViewModel) {
-    val mistakes by main.mistakes.collectAsStateWithLifecycle()
+private fun TrapsTab(main: MainViewModel) {
+    val traps by main.traps.collectAsStateWithLifecycle()
     LazyColumn(contentPadding = PAD, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         item {
-            Chip("🩹 Работа над ошибками с Фридрихом", onClick = { main.newSession(Skills.MISTAKES) }, accent = true)
+            Chip("🪤 Охота на ловушки с Атласом", onClick = { main.newSession(Skills.MISTAKES) }, accent = true)
         }
-        if (mistakes.isEmpty()) {
+        if (traps.isEmpty()) {
             item {
                 Text(
-                    "Ошибок пока нет. Когда ты ошибаешься, Friedrich записывает это сюда и потом возвращается к правилу.",
+                    "Ловушек пока не зафиксировано. Когда Атлас поймает искажение или самосаботаж в диалоге, он запишет сюда ловушку и трезвый антидот.",
                     color = Fx.TextDim, modifier = Modifier.padding(16.dp)
                 )
             }
         }
-        items(mistakes, key = { it.id }) { m ->
+        items(traps, key = { it.id }) { t ->
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -463,25 +485,25 @@ private fun MistakesTab(main: MainViewModel) {
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        m.bad, color = if (m.resolved) Fx.TextFaint else Fx.Red,
+                        t.thought, color = if (t.resolved) Fx.TextFaint else Fx.Red,
                         style = MaterialTheme.typography.bodyMedium, textDecoration = TextDecoration.LineThrough
                     )
-                    Text(m.good, color = if (m.resolved) Fx.TextDim else Fx.Green, style = MaterialTheme.typography.bodyLarge)
-                    if (m.why.isNotBlank()) Text(m.why, color = Fx.TextDim, style = MaterialTheme.typography.bodySmall)
+                    Text(t.antidote, color = if (t.resolved) Fx.TextDim else Fx.Green, style = MaterialTheme.typography.bodyLarge)
+                    if (t.why.isNotBlank()) Text(t.why, color = Fx.TextDim, style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(4.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Pill("×${m.times}", Fx.Gold)
-                        Curriculum.topic(m.topicId)?.let { Pill(it.title) }
-                        if (m.resolved) Pill("закрыта", Fx.Green)
+                        Pill("×${t.times}", Fx.Gold)
+                        Curriculum.topic(t.skillId)?.let { Pill(it.title) }
+                        if (t.resolved) Pill("обезврежена", Fx.Green)
                     }
                 }
-                IconButton(onClick = { main.resolveMistake(m.id, !m.resolved) }) {
+                IconButton(onClick = { main.resolveTrap(t.id, !t.resolved) }) {
                     Icon(
-                        Icons.Filled.Check, contentDescription = "Закрыть",
-                        tint = if (m.resolved) Fx.Green else Fx.TextFaint, modifier = Modifier.size(20.dp)
+                        Icons.Filled.Check, contentDescription = "Обезврежена",
+                        tint = if (t.resolved) Fx.Green else Fx.TextFaint, modifier = Modifier.size(20.dp)
                     )
                 }
-                IconButton(onClick = { main.deleteMistake(m.id) }) {
+                IconButton(onClick = { main.deleteTrap(t.id) }) {
                     Icon(Icons.Filled.Close, contentDescription = "Удалить", tint = Fx.TextFaint, modifier = Modifier.size(18.dp))
                 }
             }
@@ -489,12 +511,12 @@ private fun MistakesTab(main: MainViewModel) {
     }
 }
 
-// ───────────────────────── Темы ─────────────────────────
+// ───────────────────────── Навыки устойчивости ─────────────────────────
 
 @Composable
-private fun TopicsTab(main: MainViewModel) {
-    val topics by main.topics.collectAsStateWithLifecycle()
-    val mastery = remember(topics) { topics.associate { it.topicId to it.mastery } }
+private fun SkillsTab(main: MainViewModel) {
+    val skills by main.skills.collectAsStateWithLifecycle()
+    val mastery = remember(skills) { skills.associate { it.skillId to it.mastery } }
     var sheetFor by remember { mutableStateOf<Topic?>(null) }
 
     LazyColumn(contentPadding = PAD, verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -532,7 +554,7 @@ private fun TopicsTab(main: MainViewModel) {
                     }
                     Spacer(Modifier.width(10.dp))
                     Text("$value%", color = Fx.TextDim, style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(38.dp))
-                    Pill(t.level)
+                    Pill(t.stage)
                 }
             }
         }
@@ -546,20 +568,20 @@ private fun TopicsTab(main: MainViewModel) {
         ) {
             Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(t.title, color = Fx.Text, style = MaterialTheme.typography.titleLarge)
-                Text(t.de + " · " + t.level + " · освоено ${mastery[t.id] ?: 0}%", color = Fx.TextDim)
-                Chip("📚 Урок по теме", onClick = {
+                Text("${t.school} · ${t.stage} · освоено ${mastery[t.id] ?: 0}%", color = Fx.TextDim)
+                Chip("🧠 Отработать с Атласом", onClick = {
                     sheetFor = null
                     main.newSession(Skills.LESSON, t.id)
                 }, accent = true)
-                Chip("📖 Открыть шпаргалку", onClick = {
+                Chip("📖 Открыть протокол и таблицу", onClick = {
                     sheetFor = null
                     main.open(Screen.Reference(t.id))
                 })
-                Chip("✅ Я это уже знаю (90%)", onClick = {
+                Chip("✅ Уже уверенно применяю (90%)", onClick = {
                     main.setMastery(t.id, 90)
                     sheetFor = null
                 })
-                Chip("↺ Сбросить прогресс темы", onClick = {
+                Chip("↺ Сбросить прогресс навыка", onClick = {
                     main.setMastery(t.id, 0)
                     sheetFor = null
                 })
@@ -568,73 +590,73 @@ private fun TopicsTab(main: MainViewModel) {
     }
 }
 
-// ───────────────────────── Списки ─────────────────────────
+// ───────────────────────── Планы прорыва ─────────────────────────
 
 @Composable
-private fun ListsTab(main: MainViewModel) {
-    val lists by main.lists.collectAsStateWithLifecycle()
-    val progress by main.listProgress.collectAsStateWithLifecycle()
-    val byId = remember(progress) { progress.associateBy { it.listId } }
+private fun PlansTab(main: MainViewModel) {
+    val plans by main.plans.collectAsStateWithLifecycle()
+    val progress by main.planProgress.collectAsStateWithLifecycle()
+    val byId = remember(progress) { progress.associateBy { it.planId } }
     var createOpen by remember { mutableStateOf(false) }
-    var deleteFor by remember { mutableStateOf<StudyListEntity?>(null) }
+    var deleteFor by remember { mutableStateOf<ActionPlanEntity?>(null) }
 
     LazyColumn(contentPadding = PAD, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         item {
-            Chip("＋ Новый список", onClick = { createOpen = true }, accent = true)
+            Chip("＋ Новый план прорыва", onClick = { createOpen = true }, accent = true)
         }
-        if (lists.isEmpty()) {
+        if (plans.isEmpty()) {
             item {
                 Text(
-                    "Списков пока нет. Пришли Фридриху в чат слова или предложения (текстом, файлом или фото) и скажи «давай отработаем» — он сам создаст список. Или добавь его здесь.",
+                    "Активных планов пока нет. Выгрузи хаос проблем Атласу в чате и скажи «собери план» — он разложит по шагам и доведёт до результата.",
                     color = Fx.TextDim, modifier = Modifier.padding(16.dp)
                 )
             }
         }
-        items(lists, key = { it.id }) { l ->
-            val p = byId[l.id]
+        items(plans, key = { it.id }) { pl ->
+            val p = byId[pl.id]
             val total = p?.total ?: 0
-            val done = p?.mastered ?: 0
+            val done = p?.done ?: 0
             Panel {
-                Text(l.title, color = Fx.Text, style = MaterialTheme.typography.titleMedium)
+                Text(pl.title, color = Fx.Text, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "освоено $done из $total · создан " + Timex.humanDay(l.createdAt).lowercase(),
+                    "закрыто $done из $total · создан " + Timex.humanDay(pl.createdAt).lowercase(),
                     color = Fx.TextDim, style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(8.dp))
                 Meter(if (total == 0) 0 else done * 100 / total, Modifier.fillMaxWidth(), color = if (done >= total && total > 0) Fx.Green else Fx.Gold)
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Chip("▶ Отработать", onClick = { main.startDrill(l) }, accent = true)
-                    Chip("↺ Сначала", onClick = { main.resetList(l.id) })
-                    Chip("Удалить", onClick = { deleteFor = l })
+                    Chip("▶ В работу", onClick = { main.startPlanDrill(pl) }, accent = true)
+                    Chip("↺ Сначала", onClick = { main.resetPlan(pl.id) })
+                    Chip("Удалить", onClick = { deleteFor = pl })
                 }
             }
         }
     }
 
-    if (createOpen) CreateListDialog(onCreate = { title, text -> main.createListFromText(title, text) }, onDismiss = { createOpen = false })
-    deleteFor?.let { l ->
+    if (createOpen) CreatePlanDialog(onCreate = { title, text -> main.createPlanFromText(title, text) }, onDismiss = { createOpen = false })
+    deleteFor?.let { pl ->
         ConfirmDialog(
-            title = "Удалить список «${l.title}»?", text = "Слова из него останутся в словаре.",
+            title = "Удалить план «${pl.title}»?", text = "Шаги плана будут удалены.",
             confirm = "Удалить", danger = true,
-            onConfirm = { main.deleteList(l.id) }, onDismiss = { deleteFor = null }
+            onConfirm = { main.deletePlan(pl.id) }, onDismiss = { deleteFor = null }
         )
     }
 }
 
 @Composable
-private fun CreateListDialog(onCreate: (String, String) -> Unit, onDismiss: () -> Unit) {
+private fun CreatePlanDialog(onCreate: (String, String) -> Unit, onDismiss: () -> Unit) {
     var title by remember { mutableStateOf("") }
     var text by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Новый список") },
+        title = { Text("Новый план прорыва") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(title, { title = it }, label = { Text("Название") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(
                     text, { text = it },
-                    label = { Text("Каждая строка: немецкий — перевод") },
+                    label = { Text("Каждый шаг с новой строки (можно: шаг — опора)") },
                     minLines = 6, maxLines = 12, modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -663,13 +685,13 @@ private fun MemoryTab(main: MainViewModel) {
 
     LazyColumn(contentPadding = PAD, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         item {
-            SectionTitle("Факты о тебе")
-            Chip("＋ Рассказать Фридриху о себе", onClick = { addOpen = true }, accent = true)
+            SectionTitle("Факты, опоры и триггеры")
+            Chip("＋ Добавить факт о себе", onClick = { addOpen = true }, accent = true)
         }
         if (facts.isEmpty()) {
             item {
                 Text(
-                    "Friedrich запоминает то, что узнаёт из разговора: город, работу, семью, цели — и использует это в заданиях.",
+                    "Атлас запоминает важные контексты: работу, переезды, болевые триггеры, цели и то, что тебя заряжает.",
                     color = Fx.TextDim, modifier = Modifier.padding(12.dp)
                 )
             }
@@ -689,11 +711,11 @@ private fun MemoryTab(main: MainViewModel) {
                 }
             }
         }
-        item { SectionTitle("Заметки Фридриха") }
+        item { SectionTitle("Наблюдения Атласа") }
         if (journal.isEmpty()) {
             item {
                 Text(
-                    "Раз в несколько десятков сообщений Friedrich анализирует, как идёт учёба, и записывает наблюдения сюда.",
+                    "Периодически Атлас анализирует твою динамику за несколько дней и записывает ключевые выводы сюда.",
                     color = Fx.TextDim, modifier = Modifier.padding(12.dp)
                 )
             }
@@ -702,7 +724,7 @@ private fun MemoryTab(main: MainViewModel) {
             Panel {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        (if (j.kind == "milestone") "🏅 " else "🧠 ") + Timex.humanDay(j.createdAt) + ", " + Timex.hhmm(j.createdAt),
+                        (if (j.kind == "milestone") "🏔️ " else "🧠 ") + Timex.humanDay(j.createdAt) + ", " + Timex.hhmm(j.createdAt),
                         color = Fx.Gold, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f)
                     )
                     Text(
@@ -718,8 +740,8 @@ private fun MemoryTab(main: MainViewModel) {
 
     if (addOpen) {
         InputDialog(
-            title = "Факт о себе",
-            hint = "Например: «Работаю водителем», «Переезжаю в Мюнхен в мае», «Люблю футбол».",
+            title = "Факт или триггер",
+            hint = "Например: «Накрывает тревога по вечерам воскресенья», «Опора — спорт и прогулки», «Хочу сменить работу за 3 месяца».",
             confirm = "Запомнить",
             onConfirm = { main.addFact(it) },
             onDismiss = { addOpen = false }
