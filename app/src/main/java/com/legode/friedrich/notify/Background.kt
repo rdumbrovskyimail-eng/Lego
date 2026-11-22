@@ -33,16 +33,14 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 
 /*
- * Всё, что делает Атласа «всегда на связи»:
- *  • AlarmScheduler — точный будильник следующего «смс» (срабатывает и в Doze);
- *  • PingAlarmReceiver → PingWorker — отправляет СМС (ИИ или KnowledgeBase в офлайне) и ставит следующий будильник;
- *  • WatchdogWorker — каждые 15 минут проверяет, что расписание живо, и чинит его;
+ * Фоновая инфраструктура Атласа («всегда на связи»):
+ *  • AlarmScheduler — точный будильник следующего СМС (работает и в Doze);
+ *  • PingAlarmReceiver → PingWorker — отправляет СМС (ИИ или офлайн KnowledgeBase) и ставит следующий будильник;
+ *  • WatchdogWorker — каждые 15 минут проверяет расписание и чинит его при сбоях;
  *  • BootReceiver — восстанавливает расписание после перезагрузки, обновления и смены времени;
  *  • ReplyReceiver → ReplyWorker — ответ пользователя прямо из шторки уведомлений;
- *  • KeepAliveService — постоянный сервис, который не даёт системе выгрузить приложение.
+ *  • KeepAliveService — постоянный сервис без затирания актуального статуса пинга.
  */
-
-// ───────────────────────── Будильник ─────────────────────────
 
 class AlarmScheduler(private val context: Context) {
 
@@ -68,7 +66,7 @@ class AlarmScheduler(private val context: Context) {
             } else {
                 am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
             }
-        } catch (se: SecurityException) {
+        } catch (_: SecurityException) {
             try {
                 am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
             } catch (t: Throwable) {
@@ -86,8 +84,6 @@ class AlarmScheduler(private val context: Context) {
         }
     }
 }
-
-// ───────────────────────── Фоновые задания (WorkManager) ─────────────────────────
 
 object Jobs {
     private const val UNIQUE_PING = "atlas_ping"
@@ -194,11 +190,8 @@ class WatchdogWorker(context: Context, params: WorkerParameters) : CoroutineWork
     }
 }
 
-// ───────────────────────── Приёмники ─────────────────────────
-
 class PingAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
-        // Страховочный будильник на случай, если воркер не успеет; PingWorker заменит его точным.
         try {
             context.applicationContext.graph().alarms().arm(Timex.now() + 25 * 60_000L)
         } catch (t: Throwable) {
@@ -228,7 +221,10 @@ class NotificationActionReceiver : BroadcastReceiver() {
         graph.scope().launch {
             try {
                 when (action) {
-                    Notifier.ACTION_SNOOZE -> graph.brain().snooze(60)
+                    Notifier.ACTION_SNOOZE -> {
+                        graph.repo().pingDao.markUnansweredSnoozed()
+                        graph.brain().snooze(60)
+                    }
                     Notifier.ACTION_READ -> graph.brain().markRead(sessionId)
                 }
             } catch (t: Throwable) {
@@ -261,27 +257,26 @@ class BootReceiver : BroadcastReceiver() {
     }
 }
 
-// ───────────────────────── Постоянный сервис ─────────────────────────
-
 class KeepAliveService : Service() {
 
     private var scope: CoroutineScope? = null
+
+    @Volatile
+    private var latestText: String = "На связи: поддерживаю, встряхиваю, держу курс ⚡"
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        goForeground("На связи: поддерживаю, встряхиваю, держу курс ⚡")
         val graph = applicationContext.graph()
+        latestText = formatStatus(graph.settings().value.pingsEnabled, graph.runtime().nextPingAt)
+        goForeground(latestText)
         val s = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         scope = s
         s.launch {
             graph.runtime().nextPingFlow.collectLatest { at ->
-                val text = when {
-                    !graph.settings().value.pingsEnabled -> "Проактивные СМС выключены в настройках"
-                    at <= 0L -> "Подбираю подходящий момент…"
-                    else -> "Следующее СМС ≈ " + Timex.hhmm(at)
-                }
+                val text = formatStatus(graph.settings().value.pingsEnabled, at)
+                latestText = text
                 graph.notifier().updateService(text)
             }
         }
@@ -293,7 +288,7 @@ class KeepAliveService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        goForeground("На связи: поддерживаю, встряхиваю, держу курс ⚡")
+        goForeground(latestText)
         return START_STICKY
     }
 
@@ -301,6 +296,12 @@ class KeepAliveService : Service() {
         scope?.cancel()
         scope = null
         super.onDestroy()
+    }
+
+    private fun formatStatus(pingsEnabled: Boolean, at: Long): String = when {
+        !pingsEnabled -> "Проактивные СМС выключены в настройках"
+        at <= 0L -> "Подбираю подходящий момент…"
+        else -> "Следующее СМС ≈ " + Timex.hhmm(at)
     }
 
     private fun goForeground(text: String) {
