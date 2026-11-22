@@ -1,0 +1,31 @@
+name: Apply Atlas patch
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply patch to branch atlas-fixes
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b atlas-fixes
+          if git apply --check atlas-fixes-patch.txt; then
+            git apply atlas-fixes-patch.txt
+          else
+            echo "Пробую без учёта пробелов и окончаний строк"
+            git apply --ignore-whitespace atlas-fixes-patch.txt
+          fi
+          git rm -q atlas-fixes-patch.txt
+          git add -A
+          git commit -m "Безопасность, одна модель Gemini 3.1 Flash-Lite, надёжность"
+          git push --force -u origin atlas-fixes
