@@ -13,19 +13,21 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedReader
 import java.io.IOException
+import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Клиент Gemini API (REST, generateContent) без сторонних библиотек.
+ * Клиент Gemini API (REST, generateContent + streamGenerateContent SSE) без сторонних библиотек.
  *
- * Устойчивость встроена в сам клиент:
- *  • «лестница совместимости»: если API отклоняет запрос (400) из-за thinkingConfig, safetySettings,
- *    JSON-схемы или JSON-режима, клиент по очереди отключает проблемный параметр и повторяет запрос;
- *  • запасные модели: если выбранная модель недоступна (404), пробуются следующие из Settings.FALLBACK_MODELS;
- *  • повторы с паузой при 429 / 5xx / сетевых сбоях.
+ * Возможности:
+ *  • потоковый ответ по SSE с инкрементальным коллбеком;
+ *  • автоматическая лестница совместимости при 400 (thinkingConfig → tools → safetySettings → schema → jsonMode);
+ *  • запасные модели при 404 (поддерживает отдельные цепочки для быстрой и глубокой моделей);
+ *  • инструменты Google Search и URL Context для чтения статей и проверки фактов/базовых ставок.
  */
 class GeminiClient {
 
@@ -42,7 +44,9 @@ class GeminiClient {
         val maxTokens: Int = 4096,
         /** auto | minimal | low | medium | high */
         val thinking: String = "low",
-        val retries: Int = 2
+        val retries: Int = 2,
+        val useSearch: Boolean = false,
+        val useUrlContext: Boolean = false
     )
 
     enum class Kind { NO_KEY, NETWORK, AUTH, QUOTA, OVERLOAD, BLOCKED, BAD_REQUEST, MODEL, EMPTY, UNKNOWN }
@@ -57,7 +61,6 @@ class GeminiClient {
         ) : Result()
 
         data class Fail(val kind: Kind, val message: String, val http: Int = 0) : Result() {
-            /** Понятное человеку объяснение по-русски. */
             fun human(): String = when (kind) {
                 Kind.NO_KEY -> "Не указан API-ключ Gemini. Добавь его в настройках."
                 Kind.NETWORK -> "Нет связи с сервером. Проверь интернет."
@@ -75,72 +78,156 @@ class GeminiClient {
 
     private class Caps(
         var thinking: Boolean = true,
+        var tools: Boolean = true,
         var safety: Boolean = true,
         var schema: Boolean = true,
         var json: Boolean = true
     ) {
-        fun copy(): Caps = Caps(thinking, safety, schema, json)
+        fun copy(): Caps = Caps(thinking, tools, safety, schema, json)
     }
 
     private val caps = ConcurrentHashMap<String, Caps>()
     private val resolved = ConcurrentHashMap<String, String>()
 
-    /** Какая модель реально отвечает вместо запрошенной (если пришлось переключиться на запасную). */
     fun effectiveModel(preferred: String): String = resolved[preferred] ?: preferred
 
-    suspend fun generate(apiKey: String, preferredModel: String, req: Request): Result =
-        withContext(Dispatchers.IO) {
-            if (apiKey.isBlank()) return@withContext Result.Fail(Kind.NO_KEY, "no api key")
-            val wanted = preferredModel.trim().removePrefix("models/").ifEmpty { Settings.DEFAULT_MODEL }
-            val candidates = LinkedHashSet<String>()
-            resolved[wanted]?.let { candidates.add(it) }
-            candidates.add(wanted)
-            candidates.addAll(Settings.FALLBACK_MODELS)
+    suspend fun generate(
+        apiKey: String,
+        preferredModel: String,
+        req: Request,
+        fallbackModels: List<String> = Settings.FALLBACK_MODELS
+    ): Result = runWithFallback(apiKey, preferredModel, fallbackModels) { model ->
+        generateWith(apiKey, model, req, streamCallback = null)
+    }
 
-            var last: Result.Fail = Result.Fail(Kind.UNKNOWN, "no attempt")
-            for (model in candidates) {
-                when (val r = generateWith(apiKey, model, req)) {
-                    is Result.Ok -> {
-                        if (model != wanted) resolved[wanted] = model else resolved.remove(wanted)
-                        return@withContext r
-                    }
+    suspend fun streamGenerate(
+        apiKey: String,
+        preferredModel: String,
+        req: Request,
+        fallbackModels: List<String> = Settings.FALLBACK_MODELS,
+        onAccumulatedText: suspend (String) -> Unit
+    ): Result = runWithFallback(apiKey, preferredModel, fallbackModels) { model ->
+        generateWith(apiKey, model, req, streamCallback = onAccumulatedText)
+    }
 
-                    is Result.Fail -> {
-                        last = r
-                        if (r.kind != Kind.MODEL) return@withContext r
-                        Logx.w("model $model unavailable: ${r.message}")
-                    }
+    private suspend fun runWithFallback(
+        apiKey: String,
+        preferredModel: String,
+        fallbackModels: List<String>,
+        call: suspend (String) -> Result
+    ): Result = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank()) return@withContext Result.Fail(Kind.NO_KEY, "no api key")
+        val wanted = preferredModel.trim().removePrefix("models/").ifEmpty { Settings.DEFAULT_MODEL }
+        val candidates = LinkedHashSet<String>()
+        resolved[wanted]?.let { candidates.add(it) }
+        candidates.add(wanted)
+        candidates.addAll(fallbackModels)
+
+        var last: Result.Fail = Result.Fail(Kind.UNKNOWN, "no attempt")
+        for (model in candidates) {
+            when (val r = call(model)) {
+                is Result.Ok -> {
+                    if (model != wanted) resolved[wanted] = model else resolved.remove(wanted)
+                    return@withContext r
+                }
+
+                is Result.Fail -> {
+                    last = r
+                    if (r.kind != Kind.MODEL) return@withContext r
+                    Logx.w("model $model unavailable: ${r.message}")
                 }
             }
-            last
         }
+        last
+    }
 
-    private suspend fun generateWith(apiKey: String, model: String, req: Request): Result {
+    private suspend fun generateWith(
+        apiKey: String,
+        model: String,
+        req: Request,
+        streamCallback: (suspend (String) -> Unit)?
+    ): Result {
         val stored = caps[model] ?: Caps()
         val c = stored.copy()
         var transient = 0
         var downgrades = 0
+        var forceNonStream = false
 
         while (true) {
             val body = buildBody(req, c)
-            val response: Pair<Int, String> = try {
-                post("$BASE/models/$model:generateContent", apiKey, body)
-            } catch (e: IOException) {
-                if (transient < req.retries) {
-                    transient++
-                    delay(900L * transient * transient)
+            val useStream = streamCallback != null && !forceNonStream
+
+            if (useStream) {
+                val streamOutcome = try {
+                    postStream("$BASE/models/$model:streamGenerateContent?alt=sse", apiKey, body, streamCallback!!)
+                } catch (e: IOException) {
+                    if (transient < req.retries) {
+                        transient++
+                        delay(800L * transient * transient)
+                        continue
+                    }
+                    // Если стриминг оборвался, пробуем обычный запрос как страховку.
+                    forceNonStream = true
+                    continue
+                } catch (e: Exception) {
+                    forceNonStream = true
                     continue
                 }
-                return Result.Fail(Kind.NETWORK, e.message ?: e.javaClass.simpleName)
-            } catch (e: Exception) {
-                return Result.Fail(Kind.UNKNOWN, e.message ?: e.javaClass.simpleName)
-            }
 
-            val code = response.first
-            val text = response.second
+                when (streamOutcome) {
+                    is StreamOutcome.Ok -> {
+                        if (downgrades > 0) caps[model] = c
+                        return streamOutcome.result
+                    }
 
-            when {
-                code in 200..299 -> {
+                    is StreamOutcome.HttpError -> {
+                        val handled = handleHttpError(
+                            code = streamOutcome.code,
+                            text = streamOutcome.body,
+                            model = model,
+                            req = req,
+                            c = c,
+                            transient = transient,
+                            downgrades = downgrades
+                        )
+                        when (handled) {
+                            is ErrorStep.RetryTransient -> {
+                                transient++
+                                delay(handled.delayMs)
+                                continue
+                            }
+
+                            is ErrorStep.RetryDowngrade -> {
+                                downgrades++
+                                continue
+                            }
+
+                            is ErrorStep.Fatal -> return handled.fail
+                        }
+                    }
+
+                    StreamOutcome.FallbackToUnary -> {
+                        forceNonStream = true
+                        continue
+                    }
+                }
+            } else {
+                val response: Pair<Int, String> = try {
+                    post("$BASE/models/$model:generateContent", apiKey, body)
+                } catch (e: IOException) {
+                    if (transient < req.retries) {
+                        transient++
+                        delay(900L * transient * transient)
+                        continue
+                    }
+                    return Result.Fail(Kind.NETWORK, e.message ?: e.javaClass.simpleName)
+                } catch (e: Exception) {
+                    return Result.Fail(Kind.UNKNOWN, e.message ?: e.javaClass.simpleName)
+                }
+
+                val code = response.first
+                val text = response.second
+                if (code in 200..299) {
                     val parsed = parseSuccess(text, model)
                     if (parsed is Result.Ok && downgrades > 0) caps[model] = c
                     if (parsed is Result.Fail && parsed.kind == Kind.EMPTY && transient < req.retries) {
@@ -151,69 +238,94 @@ class GeminiClient {
                     return parsed
                 }
 
-                code == 400 -> {
-                    val msg = errorMessage(text)
-                    val low = msg.lowercase()
-                    if (low.contains("api key") || low.contains("api_key")) {
-                        return Result.Fail(Kind.AUTH, msg, code)
+                when (val handled = handleHttpError(code, text, model, req, c, transient, downgrades)) {
+                    is ErrorStep.RetryTransient -> {
+                        transient++
+                        delay(handled.delayMs)
+                        continue
                     }
-                    if (low.contains("not found") && low.contains("model")) {
-                        return Result.Fail(Kind.MODEL, msg, code)
-                    }
-                    val changed = downgrade(c, low, req)
-                    if (changed && downgrades < 5) {
+
+                    is ErrorStep.RetryDowngrade -> {
                         downgrades++
-                        Logx.w("400 from $model → downgrade #$downgrades (thinking=${c.thinking}, safety=${c.safety}, schema=${c.schema}, json=${c.json}): $msg")
                         continue
                     }
-                    return Result.Fail(Kind.BAD_REQUEST, msg, code)
+
+                    is ErrorStep.Fatal -> return handled.fail
                 }
-
-                code == 401 || code == 403 -> return Result.Fail(Kind.AUTH, errorMessage(text), code)
-
-                code == 404 -> return Result.Fail(Kind.MODEL, errorMessage(text), code)
-
-                code == 429 -> {
-                    if (transient < req.retries) {
-                        transient++
-                        delay(2500L * transient)
-                        continue
-                    }
-                    return Result.Fail(Kind.QUOTA, errorMessage(text), code)
-                }
-
-                code in 500..599 -> {
-                    if (transient < req.retries) {
-                        transient++
-                        delay(1500L * transient)
-                        continue
-                    }
-                    return Result.Fail(Kind.OVERLOAD, errorMessage(text), code)
-                }
-
-                else -> return Result.Fail(Kind.UNKNOWN, "HTTP $code ${errorMessage(text)}", code)
             }
         }
     }
 
-    /** Отключает одну возможность, на которую жалуется сервер. Возвращает false, если отключать больше нечего. */
+    private sealed class ErrorStep {
+        data class RetryTransient(val delayMs: Long) : ErrorStep()
+        object RetryDowngrade : ErrorStep()
+        data class Fatal(val fail: Result.Fail) : ErrorStep()
+    }
+
+    private fun handleHttpError(
+        code: Int,
+        text: String,
+        model: String,
+        req: Request,
+        c: Caps,
+        transient: Int,
+        downgrades: Int
+    ): ErrorStep = when {
+        code == 400 -> {
+            val msg = errorMessage(text)
+            val low = msg.lowercase()
+            when {
+                low.contains("api key") || low.contains("api_key") -> ErrorStep.Fatal(Result.Fail(Kind.AUTH, msg, code))
+                low.contains("not found") && low.contains("model") -> ErrorStep.Fatal(Result.Fail(Kind.MODEL, msg, code))
+                else -> {
+                    val changed = downgrade(c, low, req)
+                    if (changed && downgrades < 6) {
+                        Logx.w("400 from $model → downgrade #$downgrades: $msg")
+                        ErrorStep.RetryDowngrade
+                    } else {
+                        ErrorStep.Fatal(Result.Fail(Kind.BAD_REQUEST, msg, code))
+                    }
+                }
+            }
+        }
+
+        code == 401 || code == 403 -> ErrorStep.Fatal(Result.Fail(Kind.AUTH, errorMessage(text), code))
+        code == 404 -> ErrorStep.Fatal(Result.Fail(Kind.MODEL, errorMessage(text), code))
+        code == 429 -> if (transient < req.retries) ErrorStep.RetryTransient(2500L * (transient + 1))
+        else ErrorStep.Fatal(Result.Fail(Kind.QUOTA, errorMessage(text), code))
+
+        code in 500..599 -> if (transient < req.retries) ErrorStep.RetryTransient(1500L * (transient + 1))
+        else ErrorStep.Fatal(Result.Fail(Kind.OVERLOAD, errorMessage(text), code))
+
+        else -> ErrorStep.Fatal(Result.Fail(Kind.UNKNOWN, "HTTP $code ${errorMessage(text)}", code))
+    }
+
     private fun downgrade(c: Caps, lowMessage: String, req: Request): Boolean {
         val hasThinking = c.thinking && req.thinking != "auto"
+        val hasTools = c.tools && (req.useSearch || req.useUrlContext)
         val hasSafety = c.safety
         val hasSchema = c.schema && req.schema != null && req.jsonMode
         val hasJson = c.json && req.jsonMode
+
         when {
             hasThinking && lowMessage.contains("thinking") -> c.thinking = false
+            hasTools && (lowMessage.contains("tool") || lowMessage.contains("search") || lowMessage.contains("url_context") || lowMessage.contains("controlled generation")) -> {
+                if (hasSchema) c.schema = false
+                else if (hasJson) c.json = false
+                else c.tools = false
+            }
+
             hasSafety && (lowMessage.contains("safety") || lowMessage.contains("harm")) -> c.safety = false
-            hasSchema && (lowMessage.contains("schema") || lowMessage.contains("states")) -> c.schema = false
+            hasSchema && (lowMessage.contains("schema") || lowMessage.contains("responsejsonschema")) -> c.schema = false
             hasJson && (lowMessage.contains("mime") || lowMessage.contains("json")) -> {
                 if (hasSchema) c.schema = false else c.json = false
             }
 
             hasThinking -> c.thinking = false
-            hasSafety -> c.safety = false
             hasSchema -> c.schema = false
             hasJson -> c.json = false
+            hasTools -> c.tools = false
+            hasSafety -> c.safety = false
             else -> return false
         }
         return true
@@ -236,7 +348,13 @@ class GeminiClient {
         if (parts.length() == 0) parts.put(JSONObject().put("text", "…"))
         root.put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
 
-        // Смягчаем ложные срабатывания фильтра на эмоциональные жалобы, гнев и тяжёлые переживания.
+        if (c.tools && (req.useSearch || req.useUrlContext)) {
+            val toolsArr = JSONArray()
+            if (req.useSearch) toolsArr.put(JSONObject().put("google_search", JSONObject()))
+            if (req.useUrlContext) toolsArr.put(JSONObject().put("url_context", JSONObject()))
+            root.put("tools", toolsArr)
+        }
+
         if (c.safety) {
             val safetyArr = JSONArray()
             for (cat in SAFETY_CATEGORIES) {
@@ -255,6 +373,122 @@ class GeminiClient {
         }
         root.put("generationConfig", gen)
         return root.toString()
+    }
+
+    private sealed class StreamOutcome {
+        data class Ok(val result: Result.Ok) : StreamOutcome()
+        data class HttpError(val code: Int, val body: String) : StreamOutcome()
+        object FallbackToUnary : StreamOutcome()
+    }
+
+    @Throws(IOException::class)
+    private suspend fun postStream(
+        url: String,
+        apiKey: String,
+        body: String,
+        onAccumulatedText: suspend (String) -> Unit
+    ): StreamOutcome {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        try {
+            conn.requestMethod = "POST"
+            conn.connectTimeout = 15_000
+            conn.readTimeout = 90_000
+            conn.doOutput = true
+            conn.useCaches = false
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.setRequestProperty("Accept", "text/event-stream")
+            conn.setRequestProperty("x-goog-api-key", apiKey)
+
+            val bytes = body.toByteArray(Charsets.UTF_8)
+            conn.setFixedLengthStreamingMode(bytes.size)
+            conn.outputStream.use { it.write(bytes) }
+
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                val errBody = conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+                return StreamOutcome.HttpError(code, errBody)
+            }
+
+            val acc = StringBuilder()
+            var promptTokens = 0
+            var outputTokens = 0
+            var cachedTokens = 0
+            var blockReason = ""
+            var finishReason = ""
+
+            BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { reader ->
+                val dataBuf = StringBuilder()
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    if (line.startsWith("data:")) {
+                        if (dataBuf.isNotEmpty()) dataBuf.append('\n')
+                        dataBuf.append(line.substring(5).trimStart())
+                    } else if (line.isBlank() && dataBuf.isNotEmpty()) {
+                        val payload = dataBuf.toString()
+                        dataBuf.setLength(0)
+                        if (payload == "[DONE]") continue
+                        val root = try {
+                            JSONObject(payload)
+                        } catch (_: Exception) {
+                            null
+                        } ?: continue
+
+                        val block = root.obj("promptFeedback")?.str("blockReason") ?: ""
+                        if (block.isNotEmpty()) blockReason = block
+
+                        val cand = root.arr("candidates")?.objects()?.firstOrNull()
+                        val fr = cand?.str("finishReason") ?: ""
+                        if (fr.isNotEmpty()) finishReason = fr
+
+                        var appended = false
+                        cand?.obj("content")?.arr("parts")?.objects()?.forEach { p ->
+                            if (!p.bool("thought")) {
+                                val t = p.str("text")
+                                if (t.isNotEmpty()) {
+                                    acc.append(t)
+                                    appended = true
+                                }
+                            }
+                        }
+
+                        root.obj("usageMetadata")?.let { usage ->
+                            promptTokens = usage.int("promptTokenCount", promptTokens)
+                            val candTok = usage.int("candidatesTokenCount", 0)
+                            val thTok = usage.int("thoughtsTokenCount", 0)
+                            if (candTok + thTok > 0) outputTokens = candTok + thTok
+                            cachedTokens = usage.int("cachedContentTokenCount", cachedTokens)
+                        }
+
+                        if (appended) {
+                            onAccumulatedText(acc.toString())
+                        }
+                    }
+                }
+            }
+
+            val finalStr = acc.toString().trim()
+            if (finalStr.isEmpty()) {
+                if (blockReason.isNotEmpty() || finishReason in BLOCK_REASONS) {
+                    return StreamOutcome.HttpError(200, "").let {
+                        StreamOutcome.Ok(Result.Ok("", "", 0, 0, 0)) // обработается фолбэком ниже
+                    }.let { StreamOutcome.FallbackToUnary }
+                }
+                return StreamOutcome.FallbackToUnary
+            }
+
+            val modelName = url.substringAfter("/models/").substringBefore(":")
+            return StreamOutcome.Ok(
+                Result.Ok(
+                    text = finalStr,
+                    model = modelName,
+                    promptTokens = promptTokens,
+                    outputTokens = outputTokens,
+                    cachedTokens = cachedTokens
+                )
+            )
+        } finally {
+            conn.disconnect()
+        }
     }
 
     private fun parseSuccess(text: String, model: String): Result {
