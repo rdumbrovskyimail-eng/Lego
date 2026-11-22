@@ -4,9 +4,8 @@ import com.legode.friedrich.core.Timex
 import kotlin.random.Random
 
 /**
- * Мощный офлайн-движок СМС «на любой случай»: если нет интернета, API-ключа или сервер недоступен,
- * Атлас всё равно пишет глубокие мысли, КПТ-ловушки, дыхательные техники и вызовы прорыва из всей
- * локальной базы KnowledgeBase + личных якорей пользователя.
+ * Офлайн-движок проактивных СМС: когда нет интернета или API-ключа, Атлас работает
+ * на всей локальной базе KnowledgeBase, личных якорях силы, карточках FSRS и прогнозах.
  */
 object OfflineBank {
 
@@ -19,8 +18,8 @@ object OfflineBank {
 
     private val NUDGES = listOf(
         "Молчание в тупике играет против тебя. Выйди на связь — хватит одного честного слова.",
-        "Ты куда пропал? Когда человек проваливается в тишину, голова начинает крутить самый злой сценарий. Отзовись ⚡",
-        "Я рядом и не отстану. Не нужно длинных речей — просто ткни, как ты сейчас по шкале дня.",
+        "Ты куда пропал? Когда человек уходит в тишину, мозг крутит самый злой сценарий. Отзовись ⚡",
+        "Я рядом и не отстану. Не нужно длинных речей — просто отметь, как ты сейчас по шкале дня.",
         "Застой любит темноту и тишину. Один короткий шаг на свет — и инерция сломана."
     )
 
@@ -40,12 +39,9 @@ object OfflineBank {
         "Короткий чек-ин дня:",
         "Проверка курса:",
         "Точка опоры на сейчас:",
-        "Стоп на 30 секунд:"
+        "Пит-стоп для ума:"
     )
 
-    /**
-     * Формирует глубокое офлайн-СМС из KnowledgeBase или личного сохранённого якоря пользователя.
-     */
     fun make(
         kb: KnowledgeBase,
         rnd: Random,
@@ -54,24 +50,40 @@ object OfflineBank {
         states: Set<String>,
         unanswered: Int,
         excludeKbIds: Set<String>,
-        now: Long = Timex.now()
+        now: Long = Timex.now(),
+        dueCardFront: String? = null,
+        duePredQuestion: String? = null,
+        duePredPct: Int = 50
     ): Ping {
         val phase = Timex.circadianPhase(now)
         val night = Timex.isNightRisk(now)
         val lead = if (unanswered >= 3 && !night && rnd.nextInt(100) < 55) NUDGES.random(rnd) + "\n\n" else ""
 
-        // 1. Возврат личного сохранённого якоря силы, если пришло его время по SRS.
-        if (!dueAnchorPhrase.isNullOrBlank() && !night && rnd.nextInt(100) < 55) {
-            val whyLine = if (!dueAnchorWhy.isNullOrBlank()) "\n\n*Почему держит:* $dueAnchorWhy" else ""
-            val text = "${lead}⚓ **Возврат твоего якоря силы:**\n«$dueAnchorPhrase»$whyLine\n\nПрименил это хоть раз за последние сутки или сегодня?"
+        if (!duePredQuestion.isNullOrBlank() && !night && rnd.nextInt(100) < 35) {
             return Ping(
-                text = text,
+                text = "${lead}🎯 **Проверка прогноза (Калибровка):**\n«$duePredQuestion»\nТвоя оценка была **$duePredPct%**. Наступил срок — сбылось или нет? Зафиксируй исход в Решениях.",
+                quick = listOf("Сбылось ✓", "Не сбылось ✗", "Перенести срок"),
+                kind = "prediction_check"
+            )
+        }
+
+        if (!dueCardFront.isNullOrBlank() && !night && rnd.nextInt(100) < 40) {
+            return Ping(
+                text = "${lead}🧬 **Активное извлечение (FSRS):**\n$dueCardFront\n\nСначала вытащи ответ из головы своими словами — потом проверь в Тренажёре.",
+                quick = listOf("Вспомнил уверенно ✓", "Частично", "Забыл — разберём"),
+                kind = "card_due"
+            )
+        }
+
+        if (!dueAnchorPhrase.isNullOrBlank() && !night && rnd.nextInt(100) < 50) {
+            val whyLine = if (!dueAnchorWhy.isNullOrBlank()) "\n\n*Почему держит:* $dueAnchorWhy" else ""
+            return Ping(
+                text = "${lead}⚓ **Возврат твоего якоря силы:**\n«$dueAnchorPhrase»$whyLine\n\nПрименил это хоть раз за последние сутки или сегодня?",
                 quick = listOf("Да, держу строй ⚡", "Чуть просел, возвращаюсь", "Разберём сейчас"),
                 kind = "anchor_due"
             )
         }
 
-        // 2. Подбираем запись из крупной базы KnowledgeBase с учётом времени суток и состояния.
         val preferredTones = when {
             night -> setOf("calm")
             phase == Timex.CircadianPhase.MORNING_START -> setOf("push", "firm")
@@ -80,8 +92,8 @@ object OfflineBank {
         }
         val preferredKinds = when {
             night -> setOf("practice", "cbt", "philosophy")
-            phase == Timex.CircadianPhase.MORNING_START -> setOf("breakthrough", "philosophy", "cbt")
-            else -> setOf("cbt", "philosophy", "breakthrough", "practice")
+            phase == Timex.CircadianPhase.MORNING_START -> setOf("breakthrough", "philosophy", "model")
+            else -> setOf("cbt", "philosophy", "breakthrough", "practice", "model", "bias", "learning")
         }
         val targetStates = LinkedHashSet(states).apply {
             if (night) add("night")
@@ -100,16 +112,15 @@ object OfflineBank {
             return formatEntry(entry, lead, phase, night, rnd)
         }
 
-        // 3. Аварийный встроенный резерв (если assets пусты).
         val emergencyText = if (night) {
-            "${lead}${NIGHT_OPENERS.random(rnd)}\nСделай 4 цикла дыхания 4–7–8 и выгрузи всё, что тревожит, в заметку. До 10:00 утра любые мрачные выводы не имеют силы."
+            "${lead}${NIGHT_OPENERS.random(rnd)}\nСделай 4 цикла дыхания 4–7–8 и выгрузи всё, что тревожит, в заметку. До 10:00 утра ночные приговоры не имеют силы."
         } else {
-            "${lead}${DAY_OPENERS.random(rnd)}\n**Правило 120 секунд:** не жди настроения, чтобы начать. Выбери 1 застрявшее дело ровно на 2 минуты по таймеру и отпишись, как сдвинул."
+            "${lead}${DAY_OPENERS.random(rnd)}\n**Правило 120 секунд:** не жди настроения, чтобы начать. Выбери 1 застрявшее дело ровно на 2 минуты по таймеру и отпишись."
         }
         return Ping(
             text = emergencyText,
             quick = if (night) listOf("Сделал дыхание 🌙", "Всё ещё кручу мысли") else listOf("Сделал 2 мин ⚡", "В тупике, помоги"),
-            kind = if (night) "calm_practice" else "breakthrough"
+            kind = if (night) "calm_reset" else "breakthrough"
         )
     }
 
@@ -129,6 +140,9 @@ object OfflineBank {
             "cbt" -> "🔍 Ловушка ума"
             "philosophy" -> "🏛️ Опора"
             "practice" -> "🌊 Стабилизация"
+            "model" -> "🕸️ Ментальная модель"
+            "bias" -> "⚖️ Дебаисинг"
+            "learning" -> "🧬 Ультраобучение"
             else -> "⚡ Рывок"
         }
         val sourceTail = if (e.source.isNotBlank()) " — *${e.source}*" else ""
@@ -144,15 +158,11 @@ object OfflineBank {
         val quick = when (e.kind) {
             "practice" -> listOf("Сделал, чуть легче 🌊", "Всё равно накрывает", "Ещё технику")
             "breakthrough" -> listOf("Пошёл делать ⚡", "Сделал! 🔥", "Дай шаг проще")
-            "cbt" -> listOf("Попался в это 🎯", "Дай антидот сильнее", "У меня другая мысль")
+            "cbt", "bias" -> listOf("Попался в это 🎯", "Дай антидот сильнее", "Проверь мою мысль")
+            "model", "learning" -> listOf("Применю к задаче 🧠", "Разберём на примере", "Другую модель")
             else -> listOf("Сильно, беру на вооружение", "Как применить к себе?", "Другую мысль")
         }
 
-        return Ping(
-            text = body,
-            quick = quick,
-            kind = e.kind,
-            kbId = e.id
-        )
+        return Ping(text = body, quick = quick, kind = e.kind, kbId = e.id)
     }
 }
