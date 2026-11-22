@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Friedrich</string>
-    <string name="channel_chat_name">Сообщения от Фридриха</string>
-    <string name="channel_chat_desc">СМС-задания, вопросы и ответы наставника</string>
-    <string name="channel_service_name">Friedrich на связи</string>
-    <string name="channel_service_desc">Тихое служебное уведомление постоянной работы</string>
+    <string name="app_name">Атлас</string>
+    <string name="channel_chat_name">Сообщения от Атласа</string>
+    <string name="channel_chat_desc">СМС-вызовы, проверки решений, якоря силы и ответы союзника</string>
+    <string name="channel_service_name">Атлас на связи</string>
+    <string name="channel_service_desc">Тихое служебное уведомление постоянной фоновой работы</string>
 </resources>
