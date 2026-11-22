@@ -7,8 +7,10 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
+import java.time.temporal.TemporalAdjusters
+import kotlin.math.roundToInt
 
-/** Всё, что связано со временем: дни, «сколько прошло», циркадные фазы и эмоциональный контекст дня. */
+/** Всё, что связано со временем: дни, календарные окна, циркадные фазы и интервалы памяти. */
 object Timex {
 
     enum class CircadianPhase {
@@ -24,6 +26,7 @@ object Timex {
     private val hmFmt: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
     val weekdaysRu = listOf("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
+    val weekdaysShortRu = listOf("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
     val monthsRuGen = listOf(
         "января", "февраля", "марта", "апреля", "мая", "июня",
         "июля", "августа", "сентября", "октября", "ноября", "декабря"
@@ -46,6 +49,23 @@ object Timex {
         ""
     }
 
+    fun startOfDay(millis: Long = now()): Long =
+        dateTime(millis).toLocalDate().atStartOfDay(zone()).toInstant().toEpochMilli()
+
+    /** Начало текущей календарной недели (понедельник 00:00). */
+    fun startOfWeek(millis: Long = now()): Long =
+        dateTime(millis).toLocalDate()
+            .with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+            .atStartOfDay(zone())
+            .toInstant()
+            .toEpochMilli()
+
+    /** Метка времени через [days] дней в указанный час (для дедлайнов решений и прогнозов). */
+    fun daysFromNow(days: Int, hour: Int = 12, nowMillis: Long = now()): Long {
+        val targetDate = dateTime(nowMillis).toLocalDate().plusDays(days.toLong().coerceAtLeast(0L))
+        return targetDate.atTime(hour.coerceIn(0, 23), 0).atZone(zone()).toInstant().toEpochMilli()
+    }
+
     /** Последние [count] дней в формате yyyy-MM-dd от самого раннего к сегодняшнему. */
     fun recentDays(count: Int, nowMillis: Long = now()): List<String> {
         if (count <= 0) return emptyList()
@@ -58,6 +78,24 @@ object Timex {
     fun minuteOfDay(millis: Long): Int {
         val dt = dateTime(millis)
         return dt.hour * 60 + dt.minute
+    }
+
+    /** 0 = понедельник .. 6 = воскресенье. */
+    fun dayOfWeekIndex(millis: Long = now()): Int = (dateTime(millis).dayOfWeek.value - 1).coerceIn(0, 6)
+
+    /** Час суток 0..23. */
+    fun hourOfDay(millis: Long = now()): Int = dateTime(millis).hour
+
+    /** Короткая дата: «22 ноя» (или «22.11.2025» для другого года). */
+    fun formatShortDate(millis: Long, nowMillis: Long = now()): String {
+        if (millis <= 0L) return "—"
+        val d = dateTime(millis).toLocalDate()
+        val cur = dateTime(nowMillis).toLocalDate()
+        return if (d.year == cur.year) {
+            "${d.dayOfMonth} ${monthsRuGen[d.monthValue - 1].take(3)}"
+        } else {
+            "%02d.%02d.%04d".format(d.dayOfMonth, d.monthValue, d.year)
+        }
     }
 
     /** «Сегодня», «Вчера», «12 ноября», «3 марта 2025». */
@@ -99,7 +137,7 @@ object Timex {
     }
 
     fun until(millis: Long, nowMillis: Long = now()): String {
-        val sec = ((millis - nowMillis) / 1000L)
+        val sec = (millis - nowMillis) / 1000L
         return when {
             sec <= 0 -> "вот-вот"
             sec < 60 -> "меньше минуты"
@@ -109,12 +147,24 @@ object Timex {
         }
     }
 
+    /** Формат интервала в днях (может быть дробным) для кнопок FSRS. */
+    fun formatIntervalDays(days: Double): String = when {
+        days < (1.0 / 24.0) -> "${(days * 1440.0).roundToInt().coerceAtLeast(1)} мин"
+        days < 1.0 -> "${(days * 24.0).roundToInt().coerceAtLeast(1)} ч"
+        days < 30.0 -> "${days.roundToInt().coerceAtLeast(1)} дн"
+        days < 365.0 -> "${(days / 30.0).roundToInt().coerceAtLeast(1)} мес"
+        else -> "%.1f г".format(days / 365.0)
+    }
+
+    fun isDueSoon(dueAt: Long, windowHours: Int = 24, nowMillis: Long = now()): Boolean =
+        dueAt > 0L && dueAt <= nowMillis + windowHours * 3_600_000L
+
     fun duration(ms: Long): String {
         val total = (ms / 1000L).coerceAtLeast(0L)
         return "%d:%02d".format(total / 60, total % 60)
     }
 
-    /** Строка для промпта: «вторник, 10 ноября 2026, 17:40». */
+    /** Строка для промпта: «воскресенье, 22 ноября 2026, 16:10». */
     fun describeNow(nowMillis: Long = now()): String {
         val dt = dateTime(nowMillis)
         val wd = dt.dayOfWeek.value - 1
