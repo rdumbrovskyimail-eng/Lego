@@ -1,18 +1,27 @@
 package com.legode.friedrich.ui.theme
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 
-/** Палитра: чернильный фон и цвета немецкого флага — золото (акцент) и красный. */
+/** Палитра Атласа: глубокий ночной графит и тёплое янтарное золото (опора и фокус). */
 object Fx {
     val Ink = Color(0xFF0B0D12)
     val Panel = Color(0xFF12151C)
@@ -35,10 +44,10 @@ private val Scheme = darkColorScheme(
     onPrimary = Fx.OnGold,
     primaryContainer = Fx.GoldDim,
     onPrimaryContainer = Color(0xFFFFE38A),
-    secondary = Fx.Red,
-    onSecondary = Color.White,
-    secondaryContainer = Color(0xFF4A1518),
-    onSecondaryContainer = Color(0xFFFFB3B5),
+    secondary = Fx.Blue,
+    onSecondary = Color(0xFF041A33),
+    secondaryContainer = Color(0xFF142B47),
+    onSecondaryContainer = Color(0xFFBBD9FF),
     tertiary = Fx.Green,
     onTertiary = Color(0xFF00210E),
     background = Fx.Ink,
@@ -68,11 +77,29 @@ private val Type = Typography().let { base ->
     )
 }
 
+/** Аватар Атласа: янтарный круг с буквой А. */
 @Composable
-fun FriedrichTheme(fontScale: Float = 1f, content: @Composable () -> Unit) {
+fun AtlasAvatar(size: Dp, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(Fx.Gold),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("А", color = Fx.OnGold, fontWeight = FontWeight.Black, fontSize = (size.value * 0.5f).sp)
+    }
+}
+
+@Composable
+fun AtlasTheme(fontScale: Float = 1f, content: @Composable () -> Unit) {
     val density = LocalDensity.current
     val scaled = Density(density.density, density.fontScale * fontScale.coerceIn(0.8f, 1.5f))
     CompositionLocalProvider(LocalDensity provides scaled) {
         MaterialTheme(colorScheme = Scheme, typography = Type, content = content)
     }
 }
+
+@Composable
+fun FriedrichTheme(fontScale: Float = 1f, content: @Composable () -> Unit) =
+    AtlasTheme(fontScale = fontScale, content = content)
