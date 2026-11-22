@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** Пользовательские настройки приложения. */
+/** Пользовательские настройки Атласа. */
 data class Settings(
     val onboarded: Boolean = false,
     val hasApiKey: Boolean = false,
@@ -15,14 +15,12 @@ data class Settings(
     val model: String = DEFAULT_MODEL,
     /** Уровень «размышлений» модели: auto | minimal | low | medium | high. */
     val thinking: String = "low",
-    /** Вкладывать в каждый запрос весь справочник A0–A1 (точнее, но дороже) или только нужные темы. */
+    /** Вкладывать в каждый запрос весь методологический атлас или только релевантные протоколы. */
     val fullReference: Boolean = true,
-    /** Доля русского в сообщениях, %; -1 — подбирать автоматически по уровню. */
-    val russianShare: Int = -1,
-    /** Строгость исправлений: 0 — мягко, 1 — обычно, 2 — строго. */
-    val strictness: Int = 1,
+    /** Напористость Атласа: 0 — бережно, 1 — сбалансированно, 2 — жёсткий прорыв ⚡. */
+    val pushiness: Int = 2,
     val pingsEnabled: Boolean = true,
-    /** Частота «смс»: 0 редко … 4 безумие. См. PingScheduler.INTENSITY. */
+    /** Частота «смс»: 0 редко … 4 плотный режим. См. PingScheduler.INTENSITY. */
     val pingIntensity: Int = 3,
     val quietStartMin: Int = 22 * 60 + 30,
     val quietEndMin: Int = 7 * 60 + 30,
@@ -32,31 +30,53 @@ data class Settings(
     /** Постоянный сервис с тихим уведомлением — приложение «всегда включено». */
     val keepAlive: Boolean = true,
     val ttsEnabled: Boolean = true,
-    val ttsRate: Float = 0.9f,
+    val ttsRate: Float = 0.95f,
     val fontScale: Float = 1.0f,
-    /** Паузы «печатает…» между сообщениями, как у живого человека. */
+    /** Паузы «печатает…» между сообщениями, как у живого собеседника. */
     val humanPacing: Boolean = true
 ) {
     companion object {
         const val DEFAULT_MODEL = "gemini-3.1-flash-lite"
 
         /** Запасные модели на случай, если выбранная недоступна (404). */
-        val FALLBACK_MODELS = listOf("gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-flash-lite-latest")
+        val FALLBACK_MODELS = listOf(
+            "gemini-3.1-flash-lite",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-2.5-flash-lite",
+            "gemini-flash-lite-latest"
+        )
     }
 }
 
-/** Хранилище настроек на SharedPreferences с реактивным StateFlow. API-ключ лежит зашифрованным. */
+/** Хранилище настроек на SharedPreferences с реактивным StateFlow. API-ключ зашифрован через Android Keystore. */
 class SettingsStore(context: Context) {
 
+    private val appContext = context.applicationContext
     private val prefs: SharedPreferences =
-        context.applicationContext.getSharedPreferences("friedrich_settings", Context.MODE_PRIVATE)
+        appContext.getSharedPreferences("atlas_settings", Context.MODE_PRIVATE)
 
     @Volatile
     private var cachedKey: String? = null
 
+    init {
+        migrateLegacyKeyIfNeeded()
+    }
+
     private val state = MutableStateFlow(load())
     val flow: StateFlow<Settings> = state.asStateFlow()
     val value: Settings get() = state.value
+
+    private fun migrateLegacyKeyIfNeeded() {
+        if (!prefs.getString(K_API_KEY, "").isNullOrEmpty()) return
+        try {
+            val legacy = appContext.getSharedPreferences("friedrich_settings", Context.MODE_PRIVATE)
+            val sealed = legacy.getString(K_API_KEY, "") ?: ""
+            if (sealed.isNotEmpty()) {
+                prefs.edit().putString(K_API_KEY, sealed).apply()
+            }
+        } catch (_: Throwable) {
+        }
+    }
 
     private fun load(): Settings {
         val d = Settings()
@@ -66,8 +86,7 @@ class SettingsStore(context: Context) {
             model = prefs.getString(K_MODEL, d.model) ?: d.model,
             thinking = prefs.getString(K_THINKING, d.thinking) ?: d.thinking,
             fullReference = prefs.getBoolean(K_FULL_REF, d.fullReference),
-            russianShare = prefs.getInt(K_RU_SHARE, d.russianShare),
-            strictness = prefs.getInt(K_STRICT, d.strictness),
+            pushiness = prefs.getInt(K_PUSHINESS, d.pushiness),
             pingsEnabled = prefs.getBoolean(K_PINGS, d.pingsEnabled),
             pingIntensity = prefs.getInt(K_INTENSITY, d.pingIntensity),
             quietStartMin = prefs.getInt(K_QUIET_START, d.quietStartMin),
@@ -88,8 +107,7 @@ class SettingsStore(context: Context) {
             .putString(K_MODEL, s.model)
             .putString(K_THINKING, s.thinking)
             .putBoolean(K_FULL_REF, s.fullReference)
-            .putInt(K_RU_SHARE, s.russianShare)
-            .putInt(K_STRICT, s.strictness)
+            .putInt(K_PUSHINESS, s.pushiness)
             .putBoolean(K_PINGS, s.pingsEnabled)
             .putInt(K_INTENSITY, s.pingIntensity)
             .putInt(K_QUIET_START, s.quietStartMin)
@@ -139,8 +157,7 @@ class SettingsStore(context: Context) {
         const val K_MODEL = "model"
         const val K_THINKING = "thinking"
         const val K_FULL_REF = "full_reference"
-        const val K_RU_SHARE = "ru_share"
-        const val K_STRICT = "strictness"
+        const val K_PUSHINESS = "pushiness"
         const val K_PINGS = "pings_enabled"
         const val K_INTENSITY = "ping_intensity"
         const val K_QUIET_START = "quiet_start"
@@ -156,13 +173,13 @@ class SettingsStore(context: Context) {
 }
 
 /**
- * Служебное состояние планировщика и агента (не настройки): когда следующий «пинг»,
+ * Служебное состояние планировщика (не настройки): когда следующий «пинг»,
  * до какого времени отложено, что уже сделано сегодня.
  */
 class RuntimeState(context: Context) {
 
     private val prefs: SharedPreferences =
-        context.applicationContext.getSharedPreferences("friedrich_runtime", Context.MODE_PRIVATE)
+        context.applicationContext.getSharedPreferences("atlas_runtime", Context.MODE_PRIVATE)
 
     private val nextPing = MutableStateFlow(prefs.getLong("next_ping_at", 0L))
     val nextPingFlow: StateFlow<Long> = nextPing.asStateFlow()
@@ -178,12 +195,12 @@ class RuntimeState(context: Context) {
         get() = prefs.getLong("snooze_until", 0L)
         set(v) = prefs.edit().putLong("snooze_until", v).apply()
 
-    /** День (yyyy-MM-dd), когда Friedrich уже пожелал доброго утра. */
+    /** День (yyyy-MM-dd), когда Атлас уже отправил утренний заряд. */
     var morningDay: String
         get() = prefs.getString("morning_day", "") ?: ""
         set(v) = prefs.edit().putString("morning_day", v).apply()
 
-    /** День, когда уже был вечерний итог. */
+    /** День, когда уже была вечерняя разгрузка. */
     var eveningDay: String
         get() = prefs.getString("evening_day", "") ?: ""
         set(v) = prefs.edit().putString("evening_day", v).apply()
