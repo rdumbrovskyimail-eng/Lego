@@ -43,7 +43,8 @@ class MemoryEngine(private val repo: Repository) {
         }
     }
 
-    suspend fun apply(session: SessionEntity, reply: Reply, now: Long): Delta {
+    /** @param gentle человеку сейчас тяжело: ничего не записываем ему «в минус». */
+    suspend fun apply(session: SessionEntity, reply: Reply, now: Long, gentle: Boolean = false): Delta {
         var planId = session.planId
         var planFinished = ""
         val stageBefore = repo.profile().stage
@@ -91,7 +92,7 @@ class MemoryEngine(private val repo: Repository) {
             }
 
             "partial" -> repo.addXp(4, now)
-            "skipped" -> repo.bumpDaily(now) { it.copy(slips = it.slips + 1) }
+            "skipped" -> if (!gentle) repo.bumpDaily(now) { it.copy(slips = it.slips + 1) }
         }
 
         // 3. Новые якоря силы.
@@ -101,14 +102,17 @@ class MemoryEngine(private val repo: Repository) {
         }
 
         // 4. Когнитивные ловушки (и лёгкий штраф навыку, если модель сама не отметила его).
+        // В тяжёлом состоянии мысли человека не записываем в «ловушки» и навыки не штрафуем.
         val skillIds = reply.skills.map { it.id }.toSet()
-        for (t in reply.traps) {
-            repo.addTrap(t.thought, t.antidote, t.skillId, t.why, now)
-            if (t.skillId.isNotEmpty() && t.skillId !in skillIds) repo.applySkill(t.skillId, -1, now)
+        if (!gentle) {
+            for (t in reply.traps) {
+                repo.addTrap(t.thought, t.antidote, t.skillId, t.why, now)
+                if (t.skillId.isNotEmpty() && t.skillId !in skillIds) repo.applySkill(t.skillId, -1, now)
+            }
         }
 
         // 5. Практика психологических и интеллектуальных навыков.
-        for (s in reply.skills) repo.applySkill(s.id, s.d, now)
+        for (s in reply.skills) if (!gentle || s.d > 0) repo.applySkill(s.id, s.d, now)
 
         // 6. Факты и профиль.
         for (fact in reply.facts) repo.addFact(fact, "atlas", now)
@@ -171,7 +175,7 @@ class MemoryEngine(private val repo: Repository) {
             emotion = reply.emotion,
             result = graded,
             anchorsAdded = addedAnchors,
-            trapsLogged = reply.traps.size,
+            trapsLogged = if (gentle) 0 else reply.traps.size,
             planCreated = createdTitle,
             planSteps = createdCount,
             planFinished = planFinished,

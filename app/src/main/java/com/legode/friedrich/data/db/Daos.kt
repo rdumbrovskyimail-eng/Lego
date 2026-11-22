@@ -57,6 +57,12 @@ interface SessionDao {
     @Query("UPDATE sessions SET askedRef = :ref WHERE id = :id")
     suspend fun setAsked(id: Long, ref: String): Int
 
+    @Query("UPDATE sessions SET planId = :planId WHERE id = :id")
+    suspend fun setPlanId(id: Long, planId: Long): Int
+
+    @Query("UPDATE sessions SET lastPreview = :preview WHERE id = :id")
+    suspend fun setPreview(id: Long, preview: String): Int
+
     @Query("UPDATE sessions SET summary = :summary, summarizedUpToId = :upTo WHERE id = :id")
     suspend fun setSummary(id: Long, summary: String, upTo: Long): Int
 

@@ -31,7 +31,9 @@ data class Reply(
     val interests: String = "",
     val stage: String = "",
     val plan: PlanNote? = null,
-    val planDone: Boolean = false
+    val planDone: Boolean = false,
+    /** none | distress | crisis — оценка риска моделью (второй контур безопасности). */
+    val risk: String = "none"
 )
 
 data class AnchorNote(val phrase: String, val why: String, val source: String, val trigger: String)
@@ -160,6 +162,9 @@ object Protocol {
                 "quick" to arrayType(JSONObject().put("type", "string"), "0–4 кнопки быстрого ответа"),
                 "mood" to intType("Оценка состояния 1..10 (или 0 если рано оценивать)"),
                 "emotion" to stringType("Главная эмоция в 1-2 слова"),
+                "risk" to JSONObject().put("type", "string")
+                    .put("enum", JSONArray().put("none").put("distress").put("crisis"))
+                    .put("description", "Риск: crisis — любые, даже завуалированные мысли о смерти или самоповреждении; distress — острая боль, паника, безнадёжность; иначе none"),
                 "result" to JSONObject().put("type", "string")
                     .put("enum", JSONArray().put("none").put("done").put("partial").put("skipped")),
                 "asked" to stringType("Ссылка на проверяемый элемент: A12, S7, N3, K5 или пустая строка"),
@@ -172,7 +177,7 @@ object Protocol {
                 "plan_done" to JSONObject().put("type", "boolean"),
                 "title" to stringType("Название беседы, если просили")
             ),
-            listOf("messages")
+            listOf("messages", "risk")
         )
     }
 
@@ -375,7 +380,12 @@ object Protocol {
             interests = profile?.str("interests")?.trim()?.take(220) ?: "",
             stage = normalizeStage(profile?.str("stage", profile.str("level")) ?: ""),
             plan = plan,
-            planDone = root.bool("plan_done") || root.bool("planDone") || root.bool("list_done") || root.bool("listDone")
+            planDone = root.bool("plan_done") || root.bool("planDone") || root.bool("list_done") || root.bool("listDone"),
+            risk = when (root.str("risk").trim().lowercase()) {
+                "crisis", "кризис", "high", "высокий" -> "crisis"
+                "distress", "дистресс", "medium", "средний" -> "distress"
+                else -> "none"
+            }
         )
     }
 

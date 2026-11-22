@@ -355,7 +355,7 @@ class AttachmentStore(private val context: Context) {
             var entry = zip.nextEntry
             while (entry != null) {
                 if (entry.name == "word/document.xml") {
-                    val xml = String(zip.readBytes(), Charsets.UTF_8)
+                    val xml = String(zip.readCapped(MAX_ZIP_ENTRY_BYTES), Charsets.UTF_8)
                     return decodeXmlEntities(
                         xml.replace("</w:p>", "\n")
                             .replace(Regex("<w:tab[^>]*/>"), "\t")
@@ -375,13 +375,14 @@ class AttachmentStore(private val context: Context) {
         var total = 0
         ZipInputStream(FileInputStream(file)).use { zip ->
             var entry = zip.nextEntry
-            while (entry != null) {
+            var scanned = 0
+            while (entry != null && ++scanned <= MAX_ZIP_ENTRIES) {
                 val name = entry.name.lowercase()
                 if (!entry.isDirectory &&
                     (name.endsWith(".xhtml") || name.endsWith(".html") || name.endsWith(".htm")) &&
                     !name.endsWith("nav.xhtml") && !name.endsWith("toc.xhtml")
                 ) {
-                    val raw = String(zip.readBytes(), Charsets.UTF_8)
+                    val raw = String(zip.readCapped(MAX_ZIP_ENTRY_BYTES), Charsets.UTF_8)
                     val clean = decodeXmlEntities(
                         raw.replace(Regex("<(script|style)[^>]*>[\\s\\S]*?</\\1>", RegexOption.IGNORE_CASE), " ")
                             .replace(Regex("</(p|div|h[1-6]|li|tr|blockquote)>", RegexOption.IGNORE_CASE), "\n")
@@ -402,12 +403,45 @@ class AttachmentStore(private val context: Context) {
         }
         if (chunks.isEmpty()) return ""
         val sb = StringBuilder()
-        for ((_, text) in chunks.sortedBy { it.first }) {
+        for ((_, text) in chunks.sortedWith { a, b -> naturalCompare(a.first, b.first) }) {
             if (sb.length >= MAX_TEXT_CHARS) break
             val room = MAX_TEXT_CHARS - sb.length
             sb.append(if (text.length > room) text.substring(0, room) else text).append("\n\n")
         }
         return sb.toString().trim()
+    }
+
+    /** Читает текущую запись ZIP не больше [cap] байт — защита от «zip-бомб» в DOCX/EPUB. */
+    private fun ZipInputStream.readCapped(cap: Int): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(16 * 1024)
+        var total = 0
+        while (total < cap) {
+            val n = read(buf, 0, minOf(buf.size, cap - total))
+            if (n <= 0) break
+            out.write(buf, 0, n)
+            total += n
+        }
+        return out.toByteArray()
+    }
+
+    /** Сравнение имён с учётом чисел: «ch2.xhtml» < «ch10.xhtml». */
+    private fun naturalCompare(a: String, b: String): Int {
+        val pa = NUM_SPLIT.findAll(a.lowercase()).map { it.value }.toList()
+        val pb = NUM_SPLIT.findAll(b.lowercase()).map { it.value }.toList()
+        for (i in 0 until minOf(pa.size, pb.size)) {
+            val x = pa[i]
+            val y = pb[i]
+            val c = if (x[0].isDigit() && y[0].isDigit()) {
+                val xs = x.trimStart('0')
+                val ys = y.trimStart('0')
+                if (xs.length != ys.length) xs.length - ys.length else xs.compareTo(ys)
+            } else {
+                x.compareTo(y)
+            }
+            if (c != 0) return c
+        }
+        return pa.size - pb.size
     }
 
     private fun decodeXmlEntities(s: String): String {
@@ -447,6 +481,9 @@ class AttachmentStore(private val context: Context) {
         private const val MAX_BINARY_BYTES = 15L * 1024 * 1024
         private const val MAX_TEXT_CHARS = 120_000
         private const val MAX_IMAGE_DIM = 1600
+        private const val MAX_ZIP_ENTRY_BYTES = 8 * 1024 * 1024
+        private const val MAX_ZIP_ENTRIES = 3000
+        private val NUM_SPLIT = Regex("\\d+|\\D+")
 
         private val BOM = Char(0xFEFF)
         private val REPLACEMENT_CHAR = Char(0xFFFD)

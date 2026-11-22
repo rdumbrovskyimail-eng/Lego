@@ -18,7 +18,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -80,8 +79,12 @@ import com.legode.friedrich.ui.common.TopBar
 import com.legode.friedrich.ui.theme.Fx
 import kotlin.math.roundToInt
 
-private val THINKING = listOf("auto", "minimal", "low", "medium", "high")
-private val THINKING_LABELS = listOf("Авто", "Мин.", "Низк.", "Средн.", "Высок.")
+private val THINKING_LABEL = when (Settings.THINKING_LEVEL) {
+    "minimal" -> "минимальные"
+    "low" -> "низкие"
+    "high" -> "высокие"
+    else -> "средние"
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -94,8 +97,6 @@ fun SettingsScreen(main: MainViewModel, onBack: () -> Unit) {
 
     var key by remember { mutableStateOf(main.settings.apiKey()) }
     var keyVisible by remember { mutableStateOf(false) }
-    var model by remember { mutableStateOf(s.model) }
-    var deepModel by remember { mutableStateOf(s.deepModel) }
     var wipeConfirm by remember { mutableStateOf(false) }
 
     var name by remember { mutableStateOf("") }
@@ -171,52 +172,12 @@ fun SettingsScreen(main: MainViewModel, onBack: () -> Unit) {
                     Text(main.keyCheck, color = Fx.TextDim, style = MaterialTheme.typography.bodySmall)
                 }
                 Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = model,
-                    onValueChange = {
-                        model = it
-                        main.update { st -> st.copy(model = it.trim().ifEmpty { Settings.DEFAULT_MODEL }) }
-                    },
-                    label = { Text("Быстрая модель (чат и СМС)") }, singleLine = true, modifier = Modifier.fillMaxWidth()
+                Text("Модель: Gemini 3.1 Flash-Lite · раздумья: $THINKING_LABEL", color = Fx.Text, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "Одна модель и один уровень раздумий для чата, СМС, книг, решений и недельного синтеза.",
+                    color = Fx.TextDim, style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(6.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    for (m in Settings.FALLBACK_MODELS.take(3)) {
-                        Chip(m.removePrefix("gemini-"), onClick = {
-                            model = m
-                            main.update { st -> st.copy(model = m) }
-                        }, selected = s.model == m)
-                    }
-                }
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = deepModel,
-                    onValueChange = {
-                        deepModel = it
-                        main.update { st -> st.copy(deepModel = it.trim().ifEmpty { Settings.DEFAULT_DEEP_MODEL }) }
-                    },
-                    label = { Text("Усиленная модель (книги, решения, неделя)") }, singleLine = true, modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(6.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    for (m in Settings.DEEP_MODELS.take(3)) {
-                        Chip(m.removePrefix("gemini-"), onClick = {
-                            deepModel = m
-                            main.update { st -> st.copy(deepModel = m) }
-                        }, selected = s.deepModel == m)
-                    }
-                }
-                val effective = main.brain.effectiveModel()
-                if (effective != s.model) {
-                    Spacer(Modifier.height(6.dp))
-                    Text("Сейчас отвечает запасная модель: $effective", color = Fx.Gold, style = MaterialTheme.typography.bodySmall)
-                }
-                Spacer(Modifier.height(10.dp))
-                Text("Глубина рассуждений", color = Fx.Text, style = MaterialTheme.typography.bodyLarge)
-                Spacer(Modifier.height(6.dp))
-                Segments(THINKING_LABELS, THINKING.indexOf(s.thinking).coerceAtLeast(0), { i ->
-                    main.update { it.copy(thinking = THINKING[i]) }
-                })
                 Toggle("Потоковый вывод ответа (SSE)", "Текст появляется в реальном времени по мере генерации", s.streamingEnabled) { v ->
                     main.update { it.copy(streamingEnabled = v) }
                 }
