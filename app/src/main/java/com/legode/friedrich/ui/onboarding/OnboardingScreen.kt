@@ -46,29 +46,44 @@ import androidx.core.app.NotificationManagerCompat
 import com.legode.friedrich.brain.PingScheduler
 import com.legode.friedrich.ui.MainViewModel
 import com.legode.friedrich.ui.common.Chip
-import com.legode.friedrich.ui.common.FAvatar
 import com.legode.friedrich.ui.settings.isIgnoringBattery
 import com.legode.friedrich.ui.settings.openUrl
 import com.legode.friedrich.ui.settings.requestIgnoreBattery
+import com.legode.friedrich.ui.theme.AtlasAvatar
 import com.legode.friedrich.ui.theme.Fx
 
-private val GOALS = listOf("Переезд в Германию", "Работа", "Экзамен A1", "Учёба", "Путешествия", "Для себя")
-private val LEVELS = listOf(
-    "С нуля" to "Не знаю ни слова или почти ничего",
-    "Немного знаю" to "Приветствия, числа, пара фраз, sein и haben",
-    "Почти A1" to "Строю простые предложения, хочу закрыть пробелы"
+private val GOALS = listOf(
+    "Выйти из тупика и апатии",
+    "Убрать тревогу и панику",
+    "Пробить прокрастинацию",
+    "Пережить кризис / спад",
+    "Собрать дисциплину",
+    "Восстановить сон и покой"
 )
 
-/** Знакомство: Friedrich, ключ, рассказ о себе, режим «смс» и разрешения. */
+private val STATES = listOf(
+    "Сейчас тяжело / в яме" to "Нет сил, накрывает апатия, тревога или безысходность",
+    "Штормит и качает" to "То держусь, то откатывает назад в негатив и прокрастинацию",
+    "Хочу мощный рывок" to "В целом держусь, нужен чёткий план, тонус и анти-саботаж"
+)
+
+private val PUSH_MODES = listOf(
+    "Напористо ⚡" to "Жёсткий союзник: вскрывает отговорки, не даёт слиться (но бережёт в панике/ночью)",
+    "Сбалансированно" to "Твёрдая опора, логика КПТ и спокойное подталкивание",
+    "Бережно" to "Мягкая стабилизация без нажима, приоритет на покой"
+)
+
+/** Первичная настройка Атласа: знакомство, API-ключ, состояние, стиль напора и разрешения. */
 @Composable
 fun OnboardingScreen(main: MainViewModel) {
     val context = LocalContext.current
     var step by remember { mutableIntStateOf(0) }
-    var key by remember { mutableStateOf("") }
-    var keyOk by remember { mutableStateOf(false) }
+    var key by remember { mutableStateOf(main.settings.apiKey()) }
+    var keyOk by remember { mutableStateOf(key.isNotBlank()) }
     var name by remember { mutableStateOf("") }
-    var level by remember { mutableIntStateOf(0) }
+    var selfState by remember { mutableIntStateOf(1) }
     var goal by remember { mutableStateOf("") }
+    var pushChoice by remember { mutableIntStateOf(0) } // 0 = Напористо (pushiness = 2)
     var intensity by remember { mutableIntStateOf(3) }
     var refresh by remember { mutableIntStateOf(0) }
     val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
@@ -104,26 +119,29 @@ fun OnboardingScreen(main: MainViewModel) {
         ) {
             when (step) {
                 0 -> {
-                    FAvatar(84.dp, Modifier.align(Alignment.CenterHorizontally))
+                    AtlasAvatar(84.dp, Modifier.align(Alignment.CenterHorizontally))
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Hallo! Ich bin Friedrich.",
+                        "На связи Атлас.",
                         color = Fx.Text, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()
                     )
                     Text(
-                        "Твой личный наставник по немецкому A0–A1. Я живу в телефоне и не отстану, пока ты не заговоришь.",
+                        "Твой личный психо-эмоциональный стратег и мотивационный движок. Вытаскиваю из тупиков, тревоги и апатии к ясности, силе и действиям.",
                         color = Fx.TextDim, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(8.dp))
-                    Bullet("💬", "Пишу тебе сам", "Смс-задания в случайное время: слова, артикли, часы, вопросы — как тамагочи, только с грамматикой.")
-                    Bullet("🧠", "Помню всё о тебе", "Слова, ошибки, пройденные темы — веду досье и строю план по всей программе A0–A1.")
-                    Bullet("📋", "Работаю с твоим материалом", "Пришли список слов, фото учебника, PDF или голосовое — отработаем до автоматизма.")
-                    Bullet("📚", "Знаю все таблицы", "47 тем: от алфавита до Perfekt. Справочник всегда под рукой.")
+                    Bullet("⚡", "Напористый, но не слепой", "Ломаю отговорки и самообман, когда ты залип — и мгновенно переключаюсь на бережное заземление, если накрыла паника или острая боль.")
+                    Bullet("🧠", "КПТ, стоики, Франкл, ACT и соматика", "Встроенная крупная база цитат с глубокими разборами, антидоты ловушек ума и дыхательные практики с паузами.")
+                    Bullet("💬", "Пишу тебе первым", "Присылаю СМС-вызовы, напоминаю твои якоря силы и дожимаю обещанные шаги прямо в уведомлениях.")
+                    Bullet("🔒", "Всё остаётся на телефоне", "Переписка, триггеры, динамика настроения и планы хранятся локально в твоём устройстве.")
                 }
 
                 1 -> {
-                    Title("Ключ Gemini API", "Я думаю с помощью модели Gemini 3.1 Flash-Lite. Нужен твой API-ключ — он бесплатный и хранится только на этом телефоне в зашифрованном виде.")
+                    Title(
+                        "Ключ Gemini API",
+                        "Движок работает на модели Gemini 3.1 Flash-Lite. Нужен твой API-ключ — он хранится только на этом телефоне в зашифрованном виде."
+                    )
                     OutlinedTextField(
                         value = key, onValueChange = {
                             key = it
@@ -143,22 +161,26 @@ fun OnboardingScreen(main: MainViewModel) {
                         Text(main.keyCheck, color = if (keyOk) Fx.Green else Fx.TextDim, style = MaterialTheme.typography.bodyMedium)
                     }
                     Text(
-                        "Как получить: открой aistudio.google.com/apikey → войди в аккаунт Google → «Create API key» → скопируй и вставь сюда.\n\nМожно пропустить: без ключа я буду присылать задания из встроенного банка, но не смогу отвечать и проверять.",
+                        "Как получить: открой aistudio.google.com/apikey → войди в Google → «Create API key» → вставь сюда.\n\nМожно пропустить: без ключа Атлас всё равно будет присылать глубокие разборы, цитаты и практики из офлайн-базы.",
                         color = Fx.TextFaint, style = MaterialTheme.typography.bodySmall
                     )
                 }
 
                 2 -> {
-                    Title("Давай знакомиться", "Это попадёт в моё досье — чтобы задания были про тебя.")
+                    Title("Точка А и характер", "Это попадёт в досье, чтобы удары по тупикам и поддержка били точно в цель.")
                     OutlinedTextField(
                         value = name, onValueChange = { name = it },
-                        label = { Text("Как тебя зовут?") }, singleLine = true, modifier = Modifier.fillMaxWidth()
+                        label = { Text("Как к тебе обращаться?") }, singleLine = true, modifier = Modifier.fillMaxWidth()
                     )
-                    Text("Что ты уже знаешь?", color = Fx.Text, style = MaterialTheme.typography.titleMedium)
-                    LEVELS.forEachIndexed { i, pair ->
-                        Choice(pair.first, pair.second, level == i) { level = i }
+                    Text("Как ты сейчас себя ощущаешь?", color = Fx.Text, style = MaterialTheme.typography.titleMedium)
+                    STATES.forEachIndexed { i, pair ->
+                        Choice(pair.first, pair.second, selfState == i) { selfState = i }
                     }
-                    Text("Зачем тебе немецкий?", color = Fx.Text, style = MaterialTheme.typography.titleMedium)
+                    Text("Какой стиль общения нужен?", color = Fx.Text, style = MaterialTheme.typography.titleMedium)
+                    PUSH_MODES.forEachIndexed { i, pair ->
+                        Choice(pair.first, pair.second, pushChoice == i) { pushChoice = i }
+                    }
+                    Text("Главная задача сейчас", color = Fx.Text, style = MaterialTheme.typography.titleMedium)
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         for (rowGoals in GOALS.chunked(2)) {
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -173,31 +195,28 @@ fun OnboardingScreen(main: MainViewModel) {
                 }
 
                 else -> {
-                    Title("Как часто тебе писать?", "Я буду присылать задания в случайные моменты. Частоту и тихие часы потом можно поменять в настройках.")
+                    Title("Как часто выходить на связь?", "Атлас пишет в течение дня, контролирует выполнение шагов и перехватывает спады. Частоту и тихие часы легко поменять потом.")
                     PingScheduler.INTENSITY.forEachIndexed { i, lv ->
                         Choice(lv.title, lv.about, intensity == i) { intensity = i }
                     }
                     Spacer(Modifier.height(4.dp))
-                    Text("Чтобы я был всегда на связи", color = Fx.Text, style = MaterialTheme.typography.titleMedium)
+                    Text("Чтобы я не засыпал в фоне", color = Fx.Text, style = MaterialTheme.typography.titleMedium)
                     val notifOn = remember(refresh) { NotificationManagerCompat.from(context).areNotificationsEnabled() }
                     val battery = remember(refresh) { isIgnoringBattery(context) }
                     Permission(
-                        "Уведомления", if (notifOn) "разрешены ✅" else "без них ты не увидишь мои сообщения", notifOn
+                        "Уведомления", if (notifOn) "разрешены ✅" else "без них ты не увидишь мои СМС", notifOn
                     ) {
                         if (Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                         refresh++
                     }
                     Permission(
-                        "Работа в фоне", if (battery) "ограничения сняты ✅" else "сними ограничение батареи, иначе система меня усыпит", battery
+                        "Работа без ограничений батареи",
+                        if (battery) "разрешена ✅" else "сними ограничение, иначе система усыпит приложение",
+                        battery
                     ) {
                         requestIgnoreBattery(context)
                         refresh++
                     }
-                    Text(
-                        "После возвращения из системных настроек статусы обновятся при нажатии на строку.",
-                        color = Fx.TextFaint, style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.clickable { refresh++ }
-                    )
                 }
             }
         }
@@ -214,10 +233,10 @@ fun OnboardingScreen(main: MainViewModel) {
             }
             Spacer(Modifier.weight(1f))
             val label = when (step) {
-                0 -> "Los geht's!"
+                0 -> "Поехали ⚡"
                 1 -> if (key.isBlank()) "Пропустить" else "Дальше"
                 2 -> "Дальше"
-                else -> "Начать 🚀"
+                else -> "Запустить Атласа 🚀"
             }
             Box(
                 Modifier
@@ -230,7 +249,15 @@ fun OnboardingScreen(main: MainViewModel) {
                                 step++
                             }
 
-                            3 -> main.completeOnboarding(name, level, goal, intensity)
+                            3 -> {
+                                val pushinessVal = when (pushChoice) {
+                                    0 -> 2
+                                    1 -> 1
+                                    else -> 0
+                                }
+                                main.completeOnboarding(name, selfState, goal, intensity, pushinessVal)
+                            }
+
                             else -> step++
                         }
                     }
