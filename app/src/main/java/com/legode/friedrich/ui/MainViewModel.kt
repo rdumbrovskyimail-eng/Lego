@@ -14,6 +14,7 @@ import com.legode.friedrich.audio.Speaker
 import com.legode.friedrich.brain.Brain
 import com.legode.friedrich.brain.Curriculum
 import com.legode.friedrich.brain.GeminiClient
+import com.legode.friedrich.brain.KnowledgeBase
 import com.legode.friedrich.brain.Skills
 import com.legode.friedrich.core.Timex
 import com.legode.friedrich.data.AttachmentStore
@@ -21,16 +22,16 @@ import com.legode.friedrich.data.Repository
 import com.legode.friedrich.data.RuntimeState
 import com.legode.friedrich.data.Settings
 import com.legode.friedrich.data.SettingsStore
+import com.legode.friedrich.data.db.ActionPlanEntity
+import com.legode.friedrich.data.db.AnchorEntity
 import com.legode.friedrich.data.db.DailyEntity
 import com.legode.friedrich.data.db.FactEntity
 import com.legode.friedrich.data.db.JournalEntity
-import com.legode.friedrich.data.db.ListProgress
-import com.legode.friedrich.data.db.MistakeEntity
+import com.legode.friedrich.data.db.PlanProgress
 import com.legode.friedrich.data.db.ProfileEntity
 import com.legode.friedrich.data.db.SessionEntity
-import com.legode.friedrich.data.db.StudyListEntity
-import com.legode.friedrich.data.db.TopicProgressEntity
-import com.legode.friedrich.data.db.VocabEntity
+import com.legode.friedrich.data.db.SkillProgressEntity
+import com.legode.friedrich.data.db.TrapEntity
 import com.legode.friedrich.notify.Jobs
 import com.legode.friedrich.notify.KeepAliveService
 import com.legode.friedrich.notify.Notifier
@@ -54,7 +55,7 @@ sealed class Screen {
     object Settings : Screen()
 }
 
-/** То, чем поделились с приложением из другого приложения (текст или файл). */
+/** Текст или файлы, которыми поделились с приложением извне. */
 data class SharedPayload(val text: String, val uris: List<Uri>)
 
 @HiltViewModel
@@ -65,6 +66,7 @@ class MainViewModel @Inject constructor(
     val repo: Repository,
     val brain: Brain,
     val attachments: AttachmentStore,
+    val kb: KnowledgeBase,
     val speaker: Speaker,
     private val notifier: Notifier
 ) : ViewModel() {
@@ -73,13 +75,12 @@ class MainViewModel @Inject constructor(
 
     val stack = mutableStateListOf<Screen>(Screen.Sessions)
 
-    /** Текст или файлы из «Поделиться» — заберёт экран чата. */
+    /** Текст или файлы из системного «Поделиться» — забирает экран чата. */
     var shared by mutableStateOf<SharedPayload?>(null)
 
     fun open(screen: Screen) {
         if (stack.lastOrNull() == screen) return
         if (screen is Screen.Chat) {
-            // Чат открывается поверх списка, без дублей в стеке.
             while (stack.size > 1) stack.removeAt(stack.lastIndex)
         }
         stack.add(screen)
@@ -119,11 +120,11 @@ class MainViewModel @Inject constructor(
     val settingsFlow: StateFlow<Settings> = settings.flow
     val sessions: StateFlow<List<SessionEntity>> = repo.sessionDao.observeAll().state(emptyList())
     val profile: StateFlow<ProfileEntity?> = repo.profileDao.observe().state(null)
-    val vocab: StateFlow<List<VocabEntity>> = repo.vocabDao.observeAll().state(emptyList())
-    val mistakes: StateFlow<List<MistakeEntity>> = repo.mistakeDao.observeAll().state(emptyList())
-    val topics: StateFlow<List<TopicProgressEntity>> = repo.topicDao.observeAll().state(emptyList())
-    val lists: StateFlow<List<StudyListEntity>> = repo.listDao.observeLists().state(emptyList())
-    val listProgress: StateFlow<List<ListProgress>> = repo.listDao.observeProgress().state(emptyList())
+    val anchors: StateFlow<List<AnchorEntity>> = repo.anchorDao.observeAll().state(emptyList())
+    val traps: StateFlow<List<TrapEntity>> = repo.trapDao.observeAll().state(emptyList())
+    val skills: StateFlow<List<SkillProgressEntity>> = repo.skillDao.observeAll().state(emptyList())
+    val plans: StateFlow<List<ActionPlanEntity>> = repo.planDao.observePlans().state(emptyList())
+    val planProgress: StateFlow<List<PlanProgress>> = repo.planDao.observeProgress().state(emptyList())
     val facts: StateFlow<List<FactEntity>> = repo.factDao.observeAll().state(emptyList())
     val journal: StateFlow<List<JournalEntity>> = repo.journalDao.observeAll().state(emptyList())
     val daily: StateFlow<List<DailyEntity>> = repo.dailyDao.observeRecent(14).state(emptyList())
@@ -135,6 +136,7 @@ class MainViewModel @Inject constructor(
 
     /** Вызывается каждый раз, когда приложение выходит на передний план. */
     fun onForeground() {
+        viewModelScope.launch(Dispatchers.IO) { kb.ensureLoaded() }
         if (!settings.value.onboarded) return
         notifier.ensureChannels()
         if (settings.value.keepAlive) KeepAliveService.start(app)
@@ -145,11 +147,18 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    fun completeOnboarding(name: String, selfLevel: Int, goal: String, intensity: Int) {
+    fun completeOnboarding(name: String, selfState: Int, goal: String, intensity: Int, pushiness: Int) {
         viewModelScope.launch {
+            withContext(Dispatchers.IO) { kb.ensureLoaded() }
             repo.updateProfile { it.copy(name = name.trim(), goal = goal.trim()) }
-            repo.seedMastery(Curriculum.seedMastery(selfLevel))
-            settings.update { it.copy(onboarded = true, pingIntensity = intensity.coerceIn(0, 4)) }
+            repo.seedMastery(Curriculum.seedMastery(selfState))
+            settings.update {
+                it.copy(
+                    onboarded = true,
+                    pingIntensity = intensity.coerceIn(0, 4),
+                    pushiness = pushiness.coerceIn(0, 2)
+                )
+            }
             val home = repo.ensureHome()
             notifier.ensureChannels()
             if (settings.value.keepAlive) KeepAliveService.start(app)
@@ -164,21 +173,21 @@ class MainViewModel @Inject constructor(
 
     // ───────────────────────── Сессии ─────────────────────────
 
-    fun newSession(mode: String, arg: String = "", listId: Long = 0L) {
+    fun newSession(mode: String, arg: String = "", planId: Long = 0L) {
         viewModelScope.launch {
-            val id = repo.createSession(mode, arg, Skills.defaultTitle(mode, arg), Skills.emoji(mode, arg), listId)
+            val id = repo.createSession(mode, arg, Skills.defaultTitle(mode, arg), Skills.emoji(mode, arg), planId)
             openChat(id)
             brain.requestKickoff(id)
         }
     }
 
-    fun startDrill(list: StudyListEntity) {
+    fun startPlanDrill(plan: ActionPlanEntity) {
         viewModelScope.launch {
-            val existing = repo.sessionDao.all().firstOrNull { it.listId == list.id }
+            val existing = repo.sessionDao.all().firstOrNull { it.planId == plan.id }
             if (existing != null) {
                 openChat(existing.id)
             } else {
-                val id = repo.createSession(Skills.DRILL, "", list.title.take(40), "📋", list.id)
+                val id = repo.createSession(Skills.DRILL, "", plan.title.take(40), "📋", plan.id)
                 openChat(id)
                 brain.requestKickoff(id)
             }
@@ -204,15 +213,16 @@ class MainViewModel @Inject constructor(
 
     // ───────────────────────── Досье ─────────────────────────
 
-    fun addWord(de: String, ru: String) = viewModelScope.launch {
-        repo.upsertWord(de, ru, "", "", "user", Timex.now())
-    }
+    fun addAnchor(phrase: String, why: String, source: String = "Личный якорь", trigger: String = "") =
+        viewModelScope.launch {
+            repo.upsertAnchor(phrase, why, source, trigger, "user", Timex.now())
+        }
 
-    fun deleteWord(id: Long) = viewModelScope.launch { repo.vocabDao.delete(id) }
+    fun deleteAnchor(id: Long) = viewModelScope.launch { repo.anchorDao.delete(id) }
 
-    fun resolveMistake(id: Long, resolved: Boolean) = viewModelScope.launch { repo.mistakeDao.setResolved(id, resolved) }
+    fun resolveTrap(id: Long, resolved: Boolean) = viewModelScope.launch { repo.trapDao.setResolved(id, resolved) }
 
-    fun deleteMistake(id: Long) = viewModelScope.launch { repo.mistakeDao.delete(id) }
+    fun deleteTrap(id: Long) = viewModelScope.launch { repo.trapDao.delete(id) }
 
     fun addFact(text: String) = viewModelScope.launch { repo.addFact(text, "user", Timex.now()) }
 
@@ -220,27 +230,27 @@ class MainViewModel @Inject constructor(
 
     fun deleteJournal(id: Long) = viewModelScope.launch { repo.journalDao.delete(id) }
 
-    fun setMastery(topicId: String, value: Int) = viewModelScope.launch {
-        repo.setMastery(topicId, value)
-        repo.recomputeLevel()
+    fun setMastery(skillId: String, value: Int) = viewModelScope.launch {
+        repo.setMastery(skillId, value)
+        repo.recomputeStage()
     }
 
-    /** Список из текста: каждая строка — «немецкий — перевод» (разделители: —, -, =, ;, таб). */
-    fun createListFromText(title: String, text: String) = viewModelScope.launch {
-        val items = text.lines().mapNotNull { raw ->
+    /** План из текста: каждая строка — «шаг — зачем/условие» (разделители: —, -, =, ;, таб). */
+    fun createPlanFromText(title: String, text: String) = viewModelScope.launch {
+        val steps = text.lines().mapNotNull { raw ->
             val line = raw.trim().trimStart('•', '-', '*', ' ').trim()
             if (line.isEmpty()) return@mapNotNull null
             val parts = line.split(" — ", " – ", " - ", "\t", "=", ";", limit = 2)
-            parts[0].trim().take(200) to parts.getOrElse(1) { "" }.trim().take(200)
-        }.filter { it.first.isNotEmpty() }.take(200)
-        if (items.isNotEmpty()) {
-            repo.createList(title.ifBlank { "Мой список" }.take(60), items, 0L, Timex.now())
+            parts[0].trim().take(220) to parts.getOrElse(1) { "" }.trim().take(220)
+        }.filter { it.first.isNotEmpty() }.take(100)
+        if (steps.isNotEmpty()) {
+            repo.createPlan(title.ifBlank { "План прорыва" }.take(60), steps, 0L, Timex.now())
         }
     }
 
-    fun deleteList(id: Long) = viewModelScope.launch { repo.deleteList(id) }
+    fun deletePlan(id: Long) = viewModelScope.launch { repo.deletePlan(id) }
 
-    fun resetList(id: Long) = viewModelScope.launch { repo.listDao.resetItems(id) }
+    fun resetPlan(id: Long) = viewModelScope.launch { repo.planDao.resetSteps(id) }
 
     var reflecting by mutableStateOf(false)
         private set
@@ -290,7 +300,7 @@ class MainViewModel @Inject constructor(
         val clean = key.trim()
         settings.setApiKey(clean)
         if (clean.isEmpty()) {
-            keyCheck = "Ключ удалён. Friedrich будет писать только из офлайн-банка."
+            keyCheck = "Ключ удалён. Атлас перейдёт на офлайн-банк практик и цитат."
             onResult(false)
             return
         }
@@ -315,14 +325,14 @@ class MainViewModel @Inject constructor(
 
     // ───────────────────────── Данные ─────────────────────────
 
-    /** Экспорт всех данных в JSON-файл и системное «Поделиться». */
+    /** Экспорт всего досье и переписки в JSON-файл через системное «Поделиться». */
     fun exportAll(context: Context) = viewModelScope.launch {
         try {
             val json = repo.exportAllJson()
             val uri = withContext(Dispatchers.IO) {
                 val dir = File(app.cacheDir, "shared")
                 dir.mkdirs()
-                val file = File(dir, "friedrich-export-${Timex.today()}.json")
+                val file = File(dir, "atlas-export-${Timex.today()}.json")
                 file.writeText(json, Charsets.UTF_8)
                 FileProvider.getUriForFile(app, app.packageName + ".files", file)
             }
@@ -330,7 +340,7 @@ class MainViewModel @Inject constructor(
                 .setType("application/json")
                 .putExtra(Intent.EXTRA_STREAM, uri)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            context.startActivity(Intent.createChooser(send, "Экспорт данных Фридриха"))
+            context.startActivity(Intent.createChooser(send, "Экспорт данных Атласа"))
         } catch (_: Throwable) {
         }
     }
