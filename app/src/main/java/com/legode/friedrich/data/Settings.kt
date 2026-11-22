@@ -11,14 +11,22 @@ import kotlinx.coroutines.flow.asStateFlow
 data class Settings(
     val onboarded: Boolean = false,
     val hasApiKey: Boolean = false,
-    /** ID модели Gemini. По умолчанию — 3.1 Flash-Lite. */
+    /** Быстрая модель для повседневного чата и пингов. */
     val model: String = DEFAULT_MODEL,
+    /** Усиленная модель для Воскресного синтеза, анализа книг/PDF и глубоких дебатов. */
+    val deepModel: String = DEFAULT_DEEP_MODEL,
     /** Уровень «размышлений» модели: auto | minimal | low | medium | high. */
     val thinking: String = "low",
-    /** Вкладывать в каждый запрос весь методологический атлас или только релевантные протоколы. */
-    val fullReference: Boolean = true,
+    /** Вкладывать ли в каждый запрос весь атлас протоколов (по умолчанию выключено: работает точечный RAG). */
+    val fullReference: Boolean = false,
+    /** Потоковый вывод ответов в реальном времени (SSE). */
+    val streamingEnabled: Boolean = true,
+    /** Разрешать модели обращаться к Google Поиску и читать статьи по URL при анализе источников/фактов. */
+    val webSearchEnabled: Boolean = true,
     /** Напористость Атласа: 0 — бережно, 1 — сбалансированно, 2 — жёсткий прорыв ⚡. */
     val pushiness: Int = 2,
+    /** Глобальный сократический режим («не думай за меня», анти-оффлоадинг). */
+    val socraticByDefault: Boolean = false,
     val pingsEnabled: Boolean = true,
     /** Частота «смс»: 0 редко … 4 плотный режим. См. PingScheduler.INTENSITY. */
     val pingIntensity: Int = 3,
@@ -33,17 +41,34 @@ data class Settings(
     val ttsRate: Float = 0.95f,
     val fontScale: Float = 1.0f,
     /** Паузы «печатает…» между сообщениями, как у живого собеседника. */
-    val humanPacing: Boolean = true
+    val humanPacing: Boolean = true,
+    /** Целевой процент запоминания в FSRS (0.80 .. 0.96). */
+    val desiredRetention: Float = 0.90f,
+    /** Автоматический Воскресный интеллектуально-психологический синтез. */
+    val weeklyReviewEnabled: Boolean = true,
+    /** Блокировка приложения по отпечатку / PIN. */
+    val biometricLock: Boolean = false,
+    /** Запрет скриншотов и превью в меню недавних приложений (FLAG_SECURE). */
+    val screenshotBlock: Boolean = false
 ) {
     companion object {
         const val DEFAULT_MODEL = "gemini-3.1-flash-lite"
+        const val DEFAULT_DEEP_MODEL = "gemini-3-flash-preview"
 
-        /** Запасные модели на случай, если выбранная недоступна (404). */
+        /** Запасные быстрые модели на случай, если выбранная недоступна (404). */
         val FALLBACK_MODELS = listOf(
             "gemini-3.1-flash-lite",
             "gemini-3.1-flash-lite-preview",
             "gemini-2.5-flash-lite",
             "gemini-flash-lite-latest"
+        )
+
+        /** Пресеты усиленных моделей для глубокого анализа. */
+        val DEEP_MODELS = listOf(
+            "gemini-3-flash-preview",
+            "gemini-3.1-pro-preview",
+            "gemini-2.5-flash",
+            "gemini-3.1-flash-lite"
         )
     }
 }
@@ -84,9 +109,13 @@ class SettingsStore(context: Context) {
             onboarded = prefs.getBoolean(K_ONBOARDED, d.onboarded),
             hasApiKey = !prefs.getString(K_API_KEY, "").isNullOrEmpty(),
             model = prefs.getString(K_MODEL, d.model) ?: d.model,
+            deepModel = prefs.getString(K_DEEP_MODEL, d.deepModel) ?: d.deepModel,
             thinking = prefs.getString(K_THINKING, d.thinking) ?: d.thinking,
             fullReference = prefs.getBoolean(K_FULL_REF, d.fullReference),
+            streamingEnabled = prefs.getBoolean(K_STREAMING, d.streamingEnabled),
+            webSearchEnabled = prefs.getBoolean(K_WEB_SEARCH, d.webSearchEnabled),
             pushiness = prefs.getInt(K_PUSHINESS, d.pushiness),
+            socraticByDefault = prefs.getBoolean(K_SOCRATIC_DEFAULT, d.socraticByDefault),
             pingsEnabled = prefs.getBoolean(K_PINGS, d.pingsEnabled),
             pingIntensity = prefs.getInt(K_INTENSITY, d.pingIntensity),
             quietStartMin = prefs.getInt(K_QUIET_START, d.quietStartMin),
@@ -97,7 +126,11 @@ class SettingsStore(context: Context) {
             ttsEnabled = prefs.getBoolean(K_TTS, d.ttsEnabled),
             ttsRate = prefs.getFloat(K_TTS_RATE, d.ttsRate),
             fontScale = prefs.getFloat(K_FONT, d.fontScale),
-            humanPacing = prefs.getBoolean(K_PACING, d.humanPacing)
+            humanPacing = prefs.getBoolean(K_PACING, d.humanPacing),
+            desiredRetention = prefs.getFloat(K_RETENTION, d.desiredRetention).coerceIn(0.75f, 0.96f),
+            weeklyReviewEnabled = prefs.getBoolean(K_WEEKLY_REVIEW, d.weeklyReviewEnabled),
+            biometricLock = prefs.getBoolean(K_BIOMETRIC, d.biometricLock),
+            screenshotBlock = prefs.getBoolean(K_SCREENSHOT_BLOCK, d.screenshotBlock)
         )
     }
 
@@ -105,9 +138,13 @@ class SettingsStore(context: Context) {
         prefs.edit()
             .putBoolean(K_ONBOARDED, s.onboarded)
             .putString(K_MODEL, s.model)
+            .putString(K_DEEP_MODEL, s.deepModel)
             .putString(K_THINKING, s.thinking)
             .putBoolean(K_FULL_REF, s.fullReference)
+            .putBoolean(K_STREAMING, s.streamingEnabled)
+            .putBoolean(K_WEB_SEARCH, s.webSearchEnabled)
             .putInt(K_PUSHINESS, s.pushiness)
+            .putBoolean(K_SOCRATIC_DEFAULT, s.socraticByDefault)
             .putBoolean(K_PINGS, s.pingsEnabled)
             .putInt(K_INTENSITY, s.pingIntensity)
             .putInt(K_QUIET_START, s.quietStartMin)
@@ -119,6 +156,10 @@ class SettingsStore(context: Context) {
             .putFloat(K_TTS_RATE, s.ttsRate)
             .putFloat(K_FONT, s.fontScale)
             .putBoolean(K_PACING, s.humanPacing)
+            .putFloat(K_RETENTION, s.desiredRetention)
+            .putBoolean(K_WEEKLY_REVIEW, s.weeklyReviewEnabled)
+            .putBoolean(K_BIOMETRIC, s.biometricLock)
+            .putBoolean(K_SCREENSHOT_BLOCK, s.screenshotBlock)
             .apply()
     }
 
@@ -155,9 +196,13 @@ class SettingsStore(context: Context) {
         const val K_ONBOARDED = "onboarded"
         const val K_API_KEY = "api_key_sealed"
         const val K_MODEL = "model"
+        const val K_DEEP_MODEL = "deep_model"
         const val K_THINKING = "thinking"
         const val K_FULL_REF = "full_reference"
+        const val K_STREAMING = "streaming_enabled"
+        const val K_WEB_SEARCH = "web_search_enabled"
         const val K_PUSHINESS = "pushiness"
+        const val K_SOCRATIC_DEFAULT = "socratic_default"
         const val K_PINGS = "pings_enabled"
         const val K_INTENSITY = "ping_intensity"
         const val K_QUIET_START = "quiet_start"
@@ -169,12 +214,16 @@ class SettingsStore(context: Context) {
         const val K_TTS_RATE = "tts_rate"
         const val K_FONT = "font_scale"
         const val K_PACING = "human_pacing"
+        const val K_RETENTION = "desired_retention"
+        const val K_WEEKLY_REVIEW = "weekly_review_enabled"
+        const val K_BIOMETRIC = "biometric_lock"
+        const val K_SCREENSHOT_BLOCK = "screenshot_block"
     }
 }
 
 /**
  * Служебное состояние планировщика (не настройки): когда следующий «пинг»,
- * до какого времени отложено, что уже сделано сегодня.
+ * до какого времени отложено, что уже сделано сегодня и на этой неделе.
  */
 class RuntimeState(context: Context) {
 
@@ -204,6 +253,11 @@ class RuntimeState(context: Context) {
     var eveningDay: String
         get() = prefs.getString("evening_day", "") ?: ""
         set(v) = prefs.edit().putString("evening_day", v).apply()
+
+    /** Понедельник недели (yyyy-MM-dd), за которую уже создан Воскресный синтез. */
+    var weeklyReviewWeek: String
+        get() = prefs.getString("weekly_review_week", "") ?: ""
+        set(v) = prefs.edit().putString("weekly_review_week", v).apply()
 
     var lastPingAt: Long
         get() = prefs.getLong("last_ping_at", 0L)
