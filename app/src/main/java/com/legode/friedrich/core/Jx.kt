@@ -7,8 +7,8 @@ import org.json.JSONObject
  * Безопасные обёртки над org.json.
  *
  * Важно: на Android JSONObject.optString() для JSON-null возвращает строку "null",
- * а модель иногда отдаёт числа строками и наоборот. Все чтения ответа модели идут
- * через эти функции, чтобы «кривой» JSON никогда не ронял приложение.
+ * а языковые модели периодически отдают числа строками и наоборот. Все чтения JSON-ответов
+ * идут через эти функции, чтобы нетипизированный ответ никогда не ронял приложение.
  */
 
 fun JSONObject.str(key: String, def: String = ""): String {
@@ -55,8 +55,8 @@ fun JSONObject.bool(key: String, def: Boolean = false): Boolean {
         is Boolean -> v
         is Number -> v.toInt() != 0
         is String -> when (v.trim().lowercase()) {
-            "true", "yes", "1", "ok", "да", "ja", "richtig" -> true
-            "false", "no", "0", "нет", "nein", "falsch" -> false
+            "true", "yes", "1", "ok", "да", "верно" -> true
+            "false", "no", "0", "нет", "неверно" -> false
             else -> def
         }
         else -> def
@@ -92,6 +92,19 @@ fun JSONArray.strings(): List<String> {
     return out
 }
 
+fun JSONArray.doubles(): List<Double> {
+    val out = ArrayList<Double>(length())
+    for (i in 0 until length()) {
+        if (isNull(i)) continue
+        when (val v = opt(i)) {
+            is Number -> out.add(v.toDouble())
+            is String -> v.trim().replace(',', '.').toDoubleOrNull()?.let { out.add(it) }
+            else -> Unit
+        }
+    }
+    return out
+}
+
 fun jsonArrayOfStrings(items: Collection<String>): JSONArray {
     val a = JSONArray()
     for (s in items) a.put(s)
@@ -114,4 +127,9 @@ fun parseObjectOrNull(json: String): JSONObject? {
     } catch (_: Exception) {
         null
     }
+}
+
+fun JSONObject.putIfNotBlank(key: String, value: String): JSONObject {
+    if (value.isNotBlank()) put(key, value)
+    return this
 }
