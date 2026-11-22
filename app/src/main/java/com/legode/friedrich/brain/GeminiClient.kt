@@ -22,9 +22,9 @@ import java.util.concurrent.ConcurrentHashMap
  * Клиент Gemini API (REST, generateContent) без сторонних библиотек.
  *
  * Устойчивость встроена в сам клиент:
- *  • «лестница совместимости»: если API отклоняет запрос (400) из-за thinkingConfig, JSON-схемы или JSON-режима,
- *    клиент по очереди отключает эти возможности и повторяет запрос; удачную конфигурацию запоминает;
- *  • запасные модели: если выбранная модель не найдена (404), пробуются следующие из Settings.FALLBACK_MODELS;
+ *  • «лестница совместимости»: если API отклоняет запрос (400) из-за thinkingConfig, safetySettings,
+ *    JSON-схемы или JSON-режима, клиент по очереди отключает проблемный параметр и повторяет запрос;
+ *  • запасные модели: если выбранная модель недоступна (404), пробуются следующие из Settings.FALLBACK_MODELS;
  *  • повторы с паузой при 429 / 5xx / сетевых сбоях.
  */
 class GeminiClient {
@@ -64,7 +64,7 @@ class GeminiClient {
                 Kind.AUTH -> "API-ключ не принят. Проверь ключ в настройках."
                 Kind.QUOTA -> "Превышен лимит запросов Gemini. Подожди немного или проверь квоту ключа."
                 Kind.OVERLOAD -> "Сервер Gemini перегружен. Попробуй ещё раз через минуту."
-                Kind.BLOCKED -> "Модель отказалась отвечать на это сообщение. Попробуй сформулировать иначе."
+                Kind.BLOCKED -> "Ответ был ограничен фильтром безопасности API. Попробуй переформулировать иначе."
                 Kind.MODEL -> "Модель недоступна для этого ключа. Проверь название модели в настройках."
                 Kind.EMPTY -> "Модель вернула пустой ответ. Попробуй ещё раз."
                 Kind.BAD_REQUEST -> "Сервер отклонил запрос: ${message.take(160)}"
@@ -73,8 +73,13 @@ class GeminiClient {
         }
     }
 
-    private class Caps(var thinking: Boolean = true, var schema: Boolean = true, var json: Boolean = true) {
-        fun copy(): Caps = Caps(thinking, schema, json)
+    private class Caps(
+        var thinking: Boolean = true,
+        var safety: Boolean = true,
+        var schema: Boolean = true,
+        var json: Boolean = true
+    ) {
+        fun copy(): Caps = Caps(thinking, safety, schema, json)
     }
 
     private val caps = ConcurrentHashMap<String, Caps>()
@@ -156,9 +161,9 @@ class GeminiClient {
                         return Result.Fail(Kind.MODEL, msg, code)
                     }
                     val changed = downgrade(c, low, req)
-                    if (changed && downgrades < 4) {
+                    if (changed && downgrades < 5) {
                         downgrades++
-                        Logx.w("400 from $model → downgrade #$downgrades (thinking=${c.thinking}, schema=${c.schema}, json=${c.json}): $msg")
+                        Logx.w("400 from $model → downgrade #$downgrades (thinking=${c.thinking}, safety=${c.safety}, schema=${c.schema}, json=${c.json}): $msg")
                         continue
                     }
                     return Result.Fail(Kind.BAD_REQUEST, msg, code)
@@ -194,16 +199,19 @@ class GeminiClient {
     /** Отключает одну возможность, на которую жалуется сервер. Возвращает false, если отключать больше нечего. */
     private fun downgrade(c: Caps, lowMessage: String, req: Request): Boolean {
         val hasThinking = c.thinking && req.thinking != "auto"
+        val hasSafety = c.safety
         val hasSchema = c.schema && req.schema != null && req.jsonMode
         val hasJson = c.json && req.jsonMode
         when {
             hasThinking && lowMessage.contains("thinking") -> c.thinking = false
+            hasSafety && (lowMessage.contains("safety") || lowMessage.contains("harm")) -> c.safety = false
             hasSchema && (lowMessage.contains("schema") || lowMessage.contains("states")) -> c.schema = false
             hasJson && (lowMessage.contains("mime") || lowMessage.contains("json")) -> {
                 if (hasSchema) c.schema = false else c.json = false
             }
 
             hasThinking -> c.thinking = false
+            hasSafety -> c.safety = false
             hasSchema -> c.schema = false
             hasJson -> c.json = false
             else -> return false
@@ -227,6 +235,15 @@ class GeminiClient {
         }
         if (parts.length() == 0) parts.put(JSONObject().put("text", "…"))
         root.put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
+
+        // Смягчаем ложные срабатывания фильтра на эмоциональные жалобы, гнев и тяжёлые переживания.
+        if (c.safety) {
+            val safetyArr = JSONArray()
+            for (cat in SAFETY_CATEGORIES) {
+                safetyArr.put(JSONObject().put("category", cat).put("threshold", "BLOCK_ONLY_HIGH"))
+            }
+            root.put("safetySettings", safetyArr)
+        }
 
         val gen = JSONObject().put("maxOutputTokens", req.maxTokens)
         if (req.jsonMode && c.json) {
@@ -309,5 +326,11 @@ class GeminiClient {
     private companion object {
         const val BASE = "https://generativelanguage.googleapis.com/v1beta"
         val BLOCK_REASONS = setOf("SAFETY", "RECITATION", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "OTHER")
+        val SAFETY_CATEGORIES = listOf(
+            "HARM_CATEGORY_HARASSMENT",
+            "HARM_CATEGORY_HATE_SPEECH",
+            "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "HARM_CATEGORY_DANGEROUS_CONTENT"
+        )
     }
 }
