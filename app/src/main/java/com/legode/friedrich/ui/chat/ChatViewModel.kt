@@ -61,6 +61,8 @@ class ChatViewModel @Inject constructor(
     val typing: StateFlow<Boolean> = combine(brain.typing, sessionId) { set, sid -> sid in set }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
+    val speaking: StateFlow<Boolean> = speaker.speaking
+
     /** Вложения, прикреплённые к ещё не отправленному сообщению. */
     val pending = mutableStateListOf<Attachment>()
 
@@ -127,11 +129,11 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    /** Удаляет последний ответ Фридриха и просит ответить заново. */
+    /** Удаляет последний ответ Атласа и просит пересчитать с другим углом подхода. */
     fun regenerate() {
         val sid = sessionId.value
         viewModelScope.launch {
-            if (repo.deleteTrailingFriedrich(sid)) brain.requestRegenerate(sid)
+            if (repo.deleteTrailingAtlas(sid)) brain.requestRegenerate(sid)
         }
     }
 
@@ -146,10 +148,17 @@ class ChatViewModel @Inject constructor(
             return
         }
         if (!speaker.available.value) {
-            toastFlow.tryEmit("На устройстве нет немецкого голоса. Установи его в настройках синтеза речи.")
+            toastFlow.tryEmit("На устройстве нет русского голоса для синтеза речи. Установи его в настройках TTS.")
             return
         }
-        speaker.speak(text, s.ttsRate)
+        val isBreathScript = text.contains("[пауза", ignoreCase = true) || text.contains("[pause", ignoreCase = true)
+        val rate = if (isBreathScript) (s.ttsRate * 0.90f).coerceIn(0.6f, 1.3f) else s.ttsRate
+        val pitch = if (isBreathScript) 0.94f else 1.0f
+        speaker.speak(text, rate, pitch)
+    }
+
+    fun stopSpeaking() {
+        speaker.stop()
     }
 
     // ───────────────────────── Вложения ─────────────────────────
@@ -236,16 +245,17 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch { repo.clearSession(sid) }
     }
 
-    fun detachList() {
+    fun detachPlan() {
         val sid = sessionId.value
-        viewModelScope.launch { repo.sessionDao.setList(sid, 0L) }
+        viewModelScope.launch { repo.sessionDao.setPlan(sid, 0L) }
     }
 
     suspend fun exportText(): String = repo.exportSessionText(sessionId.value)
 
     override fun onCleared() {
-        recorder.cancel()
-        player.stop()
+        recorder.release()
+        player.release()
+        speaker.stop()
         super.onCleared()
     }
 
