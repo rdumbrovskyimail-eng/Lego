@@ -6,11 +6,11 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- «СМС» от Фридриха -->
+    <!-- Проактивные СМС от Атласа -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
-    <!-- Работа «всегда»: будильники, автозапуск, сервис -->
+    <!-- Постоянная работа в фоне: будильники, автозапуск, сервис -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission
@@ -62,7 +62,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- «Поделиться» текстом/файлом из других приложений → в чат с Фридрихом -->
+            <!-- «Поделиться» текстом/скриншотом/PDF из других приложений → в главный чат с Атласом -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -72,7 +72,7 @@
             </intent-filter>
         </activity>
 
-        <!-- Будильник случайного «пинга» -->
+        <!-- Будильник проактивного СМС -->
         <receiver
             android:name=".notify.PingAlarmReceiver"
             android:exported="false" />
@@ -87,7 +87,7 @@
             android:name=".notify.NotificationActionReceiver"
             android:exported="false" />
 
-        <!-- Перезапуск расписания после перезагрузки / обновления / смены времени -->
+        <!-- Восстановление расписания после перезагрузки / обновления / смены времени -->
         <receiver
             android:name=".notify.BootReceiver"
             android:exported="true">
@@ -101,14 +101,14 @@
             </intent-filter>
         </receiver>
 
-        <!-- Постоянный сервис: держит процесс живым, чтобы Friedrich был «всегда включён» -->
+        <!-- Постоянный сервис: держит процесс живым, чтобы Атлас оставался на связи -->
         <service
             android:name=".notify.KeepAliveService"
             android:exported="false"
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Persistent language-tutor companion delivering scheduled practice messages" />
+                android:value="Persistent psycho-emotional support and proactive motivational coaching companion" />
         </service>
 
         <!-- Отдача фото с камеры и экспортов -->
