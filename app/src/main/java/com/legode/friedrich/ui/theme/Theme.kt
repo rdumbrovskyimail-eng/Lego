@@ -33,6 +33,9 @@ object Fx {
     val Red = Color(0xFFE5484D)
     val Green = Color(0xFF6FD08C)
     val Blue = Color(0xFF7AB6FF)
+    val Purple = Color(0xFFB388FF)
+    val Cyan = Color(0xFF4DD0E1)
+    val Amber = Color(0xFFFFA726)
     val Text = Color(0xFFECEEF3)
     val TextDim = Color(0xFF9BA3B4)
     val TextFaint = Color(0xFF6B7385)
@@ -99,7 +102,3 @@ fun AtlasTheme(fontScale: Float = 1f, content: @Composable () -> Unit) {
         MaterialTheme(colorScheme = Scheme, typography = Type, content = content)
     }
 }
-
-@Composable
-fun FriedrichTheme(fontScale: Float = 1f, content: @Composable () -> Unit) =
-    AtlasTheme(fontScale = fontScale, content = content)
