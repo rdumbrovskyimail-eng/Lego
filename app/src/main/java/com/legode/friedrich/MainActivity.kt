@@ -33,7 +33,7 @@ import com.legode.friedrich.ui.onboarding.OnboardingScreen
 import com.legode.friedrich.ui.reference.ReferenceScreen
 import com.legode.friedrich.ui.sessions.SessionsScreen
 import com.legode.friedrich.ui.settings.SettingsScreen
-import com.legode.friedrich.ui.theme.FriedrichTheme
+import com.legode.friedrich.ui.theme.AtlasTheme
 import com.legode.friedrich.ui.theme.Fx
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -58,7 +58,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val settings by main.settingsFlow.collectAsStateWithLifecycle()
-            FriedrichTheme(fontScale = settings.fontScale) {
+            AtlasTheme(fontScale = settings.fontScale) {
                 Box(
                     Modifier
                         .fillMaxSize()
@@ -99,7 +99,7 @@ class MainActivity : ComponentActivity() {
         main.onForeground()
     }
 
-    /** Уведомление → нужный чат; «Поделиться» → текст и файлы в чат с Фридрихом. */
+    /** Уведомление → нужный чат; «Поделиться» → текст, скрины и файлы в главный чат с Атласом. */
     private fun handleIntent(intent: Intent?) {
         if (intent == null) return
         when (intent.action) {
@@ -130,7 +130,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Максимальная частота обновления экрана — плавная прокрутка чата. */
     private fun highRefreshRate() {
         try {
             @Suppress("DEPRECATION")
