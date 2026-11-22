@@ -5,6 +5,7 @@ import androidx.room.Room
 import com.legode.friedrich.audio.Speaker
 import com.legode.friedrich.brain.Brain
 import com.legode.friedrich.brain.GeminiClient
+import com.legode.friedrich.brain.KnowledgeBase
 import com.legode.friedrich.data.AttachmentStore
 import com.legode.friedrich.data.Repository
 import com.legode.friedrich.data.RuntimeState
@@ -24,7 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import javax.inject.Singleton
 
-/** Весь граф зависимостей приложения — в одном месте. */
+/** Весь граф зависимостей Атласа — в одном месте. */
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
@@ -32,7 +33,7 @@ object AppModule {
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AppDatabase {
-        return Room.databaseBuilder(context, AppDatabase::class.java, "friedrich.db")
+        return Room.databaseBuilder(context, AppDatabase::class.java, "atlas.db")
             .fallbackToDestructiveMigration()
             .build()
     }
@@ -48,6 +49,10 @@ object AppModule {
     @Provides
     @Singleton
     fun provideAttachments(@ApplicationContext context: Context): AttachmentStore = AttachmentStore(context)
+
+    @Provides
+    @Singleton
+    fun provideKnowledgeBase(@ApplicationContext context: Context): KnowledgeBase = KnowledgeBase(context)
 
     @Provides
     @Singleton
@@ -82,10 +87,11 @@ object AppModule {
         settings: SettingsStore,
         runtime: RuntimeState,
         attachments: AttachmentStore,
+        kb: KnowledgeBase,
         notifier: Notifier,
         alarms: AlarmScheduler,
         scope: CoroutineScope
-    ): Brain = Brain(context, repo, gemini, settings, runtime, attachments, notifier, alarms, scope)
+    ): Brain = Brain(context, repo, gemini, settings, runtime, attachments, kb, notifier, alarms, scope)
 }
 
 /** Доступ к графу из мест, куда Hilt не внедряет сам: воркеры, приёмники, сервис. */
@@ -98,6 +104,7 @@ interface AppGraph {
     fun runtime(): RuntimeState
     fun notifier(): Notifier
     fun alarms(): AlarmScheduler
+    fun kb(): KnowledgeBase
     fun scope(): CoroutineScope
 }
 
