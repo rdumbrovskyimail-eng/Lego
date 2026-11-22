@@ -2,6 +2,8 @@
 
 package com.legode.friedrich.ui.common
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,6 +25,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -39,29 +43,30 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.legode.friedrich.brain.RadarScores
+import com.legode.friedrich.brain.Srs
+import com.legode.friedrich.core.Timex
 import com.legode.friedrich.ui.theme.Fx
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
 
-/** Аватар Фридриха: золотой круг с буквой F. */
-@Composable
-fun FAvatar(size: Dp, modifier: Modifier = Modifier) {
-    Box(
-        modifier
-            .size(size)
-            .clip(CircleShape)
-            .background(Fx.Gold),
-        contentAlignment = Alignment.Center
-    ) {
-        Text("F", color = Fx.OnGold, fontWeight = FontWeight.Black, fontSize = (size.value * 0.5f).sp)
-    }
-}
-
-/** Кружок с эмодзи — «аватар» беседы. */
+/** Кружок с эмодзи — «аватар» беседы или режима. */
 @Composable
 fun EmojiAvatar(emoji: String, size: Dp, modifier: Modifier = Modifier) {
     Box(
@@ -109,6 +114,28 @@ fun TopBar(
     }
 }
 
+/** Глобальный мини-бар, позволяющий остановить TTS с любого экрана приложения. */
+@Composable
+fun SpeakingBar(speaking: Boolean, onStop: () -> Unit) {
+    AnimatedVisibility(visible = speaking) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .background(Fx.GoldDim)
+                .clickable(onClick = onStop)
+                .padding(horizontal = 14.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Filled.VolumeUp, contentDescription = null, tint = Fx.Gold, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Атлас читает вслух…", color = Fx.Gold, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+            Icon(Icons.Filled.Stop, contentDescription = "Остановить", tint = Fx.Gold, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("Стоп", color = Fx.Gold, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
 @Composable
 fun Panel(
     modifier: Modifier = Modifier,
@@ -149,7 +176,6 @@ fun Pill(text: String, color: Color = Fx.TextDim, bg: Color = Fx.CardHigh, modif
     )
 }
 
-/** Полоска прогресса 0..100. */
 @Composable
 fun Meter(percent: Int, modifier: Modifier = Modifier, color: Color = Fx.Gold, height: Dp = 6.dp) {
     Box(
@@ -168,7 +194,6 @@ fun Meter(percent: Int, modifier: Modifier = Modifier, color: Color = Fx.Gold, h
     }
 }
 
-/** Переключатель из нескольких вариантов («сегменты»). */
 @Composable
 fun Segments(options: List<String>, selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
     Row(
@@ -202,7 +227,6 @@ fun Segments(options: List<String>, selected: Int, onSelect: (Int) -> Unit, modi
     }
 }
 
-/** Небольшая кнопка-чип. */
 @Composable
 fun Chip(
     text: String,
@@ -302,7 +326,6 @@ fun InputDialog(
     )
 }
 
-/** Строка настройки: заголовок, пояснение и элемент управления справа. */
 @Composable
 fun SettingRow(
     title: String,
@@ -321,5 +344,206 @@ fun SettingRow(
         }
         Spacer(Modifier.width(10.dp))
         trailing()
+    }
+}
+
+// ───────────────────────── Аналитические графики (Canvas) ─────────────────────────
+
+/** 6-осевой Радар интеллекта и устойчивости без сторонних библиотек. */
+@Composable
+fun RadarChart(scores: RadarScores, modifier: Modifier = Modifier) {
+    val measurer = rememberTextMeasurer()
+    val axes = remember(scores) {
+        listOf(
+            "Опора" to scores.resilience,
+            "Критика" to scores.critical,
+            "Системы" to scores.systems,
+            "Решения" to scores.calibration,
+            "Память" to scores.learning,
+            "Воля" to scores.execution
+        )
+    }
+    val labelStyle = TextStyle(color = Fx.TextDim, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+
+    Canvas(
+        modifier
+            .fillMaxWidth()
+            .height(235.dp)
+    ) {
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        val radius = minOf(size.width, size.height) * 0.34f
+        val step = (2.0 * Math.PI / 6.0)
+
+        fun point(idx: Int, ratio: Float): Offset {
+            val angle = -Math.PI / 2.0 + idx * step
+            return Offset(
+                x = cx + (radius * ratio * cos(angle)).toFloat(),
+                y = cy + (radius * ratio * sin(angle)).toFloat()
+            )
+        }
+
+        // Концентрические шестиугольники
+        for (ring in listOf(0.25f, 0.50f, 0.75f, 1.0f)) {
+            val p = Path()
+            for (i in 0 until 6) {
+                val pt = point(i, ring)
+                if (i == 0) p.moveTo(pt.x, pt.y) else p.lineTo(pt.x, pt.y)
+            }
+            p.close()
+            drawPath(p, color = Fx.Line, style = Stroke(width = if (ring == 1f) 1.5.dp.toPx() else 1.dp.toPx()))
+        }
+
+        // Лучи осей
+        for (i in 0 until 6) {
+            drawLine(color = Fx.Line, start = Offset(cx, cy), end = point(i, 1f), strokeWidth = 1.dp.toPx())
+        }
+
+        // Полигон текущих показателей пользователя
+        val dataPath = Path()
+        val pts = ArrayList<Offset>(6)
+        axes.forEachIndexed { i, (_, value) ->
+            val ratio = value.coerceIn(5, 100) / 100f
+            val pt = point(i, ratio)
+            pts.add(pt)
+            if (i == 0) dataPath.moveTo(pt.x, pt.y) else dataPath.lineTo(pt.x, pt.y)
+        }
+        dataPath.close()
+        drawPath(dataPath, color = Fx.Gold.copy(alpha = 0.24f))
+        drawPath(dataPath, color = Fx.Gold, style = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round))
+
+        for (pt in pts) {
+            drawCircle(color = Fx.Gold, radius = 4.dp.toPx(), center = pt)
+        }
+
+        // Подписи осей по кругу
+        axes.forEachIndexed { i, (title, value) ->
+            val angle = -Math.PI / 2.0 + i * step
+            val labelR = radius + 24.dp.toPx()
+            val text = "$title $value%"
+            val res = measurer.measure(text, style = labelStyle)
+            val rawX = cx + (labelR * cos(angle)).toFloat() - res.size.width / 2f
+            val rawY = cy + (labelR * sin(angle)).toFloat() - res.size.height / 2f
+            val safeX = rawX.coerceIn(2f, (size.width - res.size.width - 2f).coerceAtLeast(2f))
+            val safeY = rawY.coerceIn(2f, (size.height - res.size.height - 2f).coerceAtLeast(2f))
+            drawText(res, topLeft = Offset(safeX, safeY))
+        }
+    }
+}
+
+/** Кривая калибровки прогнозов (идеальная диагональ vs реальная точность пользователя). */
+@Composable
+fun CalibrationChart(stats: Srs.CalibrationStats, modifier: Modifier = Modifier) {
+    val measurer = rememberTextMeasurer()
+    val axisStyle = TextStyle(color = Fx.TextFaint, fontSize = 10.sp)
+
+    Canvas(
+        modifier
+            .fillMaxWidth()
+            .height(175.dp)
+    ) {
+        val left = 32.dp.toPx()
+        val right = size.width - 14.dp.toPx()
+        val top = 14.dp.toPx()
+        val bottom = size.height - 24.dp.toPx()
+        val w = (right - left).coerceAtLeast(1f)
+        val h = (bottom - top).coerceAtLeast(1f)
+
+        fun xy(px: Double, py: Double): Offset = Offset(
+            x = left + (px.coerceIn(0.0, 1.0) * w).toFloat(),
+            y = bottom - (py.coerceIn(0.0, 1.0) * h).toFloat()
+        )
+
+        // Сетка
+        for (pct in listOf(0.0, 0.25, 0.5, 0.75, 1.0)) {
+            val y = bottom - (pct * h).toFloat()
+            drawLine(Fx.Line, Offset(left, y), Offset(right, y), strokeWidth = 1.dp.toPx())
+            val lbl = measurer.measure("${(pct * 100).toInt()}%", style = axisStyle)
+            drawText(lbl, topLeft = Offset(2f, y - lbl.size.height / 2f))
+        }
+
+        // Идеальная диагональ калибровки
+        drawLine(
+            color = Fx.TextFaint,
+            start = xy(0.0, 0.0),
+            end = xy(1.0, 1.0),
+            strokeWidth = 1.5.dp.toPx(),
+            pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f), 0f)
+        )
+
+        val activeBins = stats.bins.filter { it.count > 0 }
+        if (activeBins.size >= 2) {
+            val path = Path()
+            activeBins.forEachIndexed { idx, b ->
+                val pt = xy(b.expectedProb, b.observedFreq)
+                if (idx == 0) path.moveTo(pt.x, pt.y) else path.lineTo(pt.x, pt.y)
+            }
+            drawPath(path, color = Fx.Gold, style = Stroke(width = 2.4.dp.toPx(), cap = StrokeCap.Round))
+        }
+
+        for (b in activeBins) {
+            val pt = xy(b.expectedProb, b.observedFreq)
+            val err = abs(b.expectedProb - b.observedFreq)
+            val dotColor = when {
+                err <= 0.10 -> Fx.Green
+                err <= 0.20 -> Fx.Gold
+                else -> Fx.Red
+            }
+            drawCircle(color = dotColor, radius = 5.dp.toPx(), center = pt)
+            val tag = measurer.measure("n=${b.count}", style = axisStyle.copy(color = Fx.Text))
+            drawText(tag, topLeft = Offset((pt.x - tag.size.width / 2f).coerceIn(left, right - tag.size.width), (pt.y - 16.dp.toPx()).coerceAtLeast(2f)))
+        }
+
+        for (pct in listOf(0.0, 0.5, 1.0)) {
+            val x = left + (pct * w).toFloat()
+            val lbl = measurer.measure("${(pct * 100).toInt()}%", style = axisStyle)
+            drawText(lbl, topLeft = Offset((x - lbl.size.width / 2f).coerceIn(left, right - lbl.size.width), bottom + 4.dp.toPx()))
+        }
+    }
+}
+
+/** Тепловая карта 7 дней × 4 фазы суток (Утро / День / Вечер / Ночь). */
+@Composable
+fun ActivityHeatmap(grid: Array<IntArray>, modifier: Modifier = Modifier) {
+    val periods = listOf("Утро", "День", "Вечер", "Ночь")
+    val peak = remember(grid) {
+        var m = 1
+        for (row in grid) for (v in row) if (v > m) m = v
+        m
+    }
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Spacer(Modifier.width(44.dp))
+            for (d in Timex.weekdaysShortRu) {
+                Text(d, color = Fx.TextFaint, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+            }
+        }
+        periods.forEachIndexed { periodIdx, label ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(label, color = Fx.TextDim, style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(44.dp))
+                for (dayIdx in 0 until 7) {
+                    val count = grid.getOrNull(dayIdx)?.getOrNull(periodIdx) ?: 0
+                    val alpha = if (count == 0) 0f else (0.22f + 0.78f * (count.toFloat() / peak)).coerceIn(0.2f, 1f)
+                    val bg = if (count == 0) Fx.Ink else Fx.Gold.copy(alpha = alpha)
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .height(22.dp)
+                            .clip(RoundedCornerShape(5.dp))
+                            .background(bg),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (count > 0) {
+                            Text(
+                                count.toString(),
+                                color = if (alpha > 0.6f) Fx.OnGold else Fx.Text,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
