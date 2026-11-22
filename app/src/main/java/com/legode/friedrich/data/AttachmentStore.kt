@@ -24,9 +24,9 @@ import kotlin.math.roundToInt
 /**
  * Приём и хранение вложений.
  *
- * Любой файл копируется в приватную папку приложения и приводится к виду, который понимает Gemini:
+ * Любой файл копируется в приватную папку приложения и приводится к виду, который понимает Атлас и Gemini:
  *  - фото уменьшается до 1600 px, поворачивается по EXIF и сохраняется в JPEG;
- *  - текстовые файлы (txt, csv, md, json, srt…) и DOCX превращаются в обычный текст;
+ *  - текстовые файлы (txt, csv, md, json, srt…), DOCX и EPUB-книги превращаются в чистый текст;
  *  - PDF и аудио копируются как есть.
  */
 class AttachmentStore(private val context: Context) {
@@ -103,6 +103,14 @@ class AttachmentStore(private val context: Context) {
                     saveText(text, name)
                 }
 
+                ext == "epub" || mime == "application/epub+zip" -> {
+                    val text = epubText(tmp).trim()
+                    if (text.isEmpty()) {
+                        return@withContext ImportResult.Rejected("В книге EPUB «$name» не нашлось читаемого текста.")
+                    }
+                    saveText(text, name)
+                }
+
                 mime.startsWith("text/") || mime in TEXT_MIMES || ext in TEXT_EXT || looksLikeText(tmp) -> {
                     val text = readTextCapped(tmp).trim()
                     if (text.isEmpty()) {
@@ -112,7 +120,7 @@ class AttachmentStore(private val context: Context) {
                 }
 
                 else -> ImportResult.Rejected(
-                    "Такой файл («$name») Friedrich не читает. Подойдут: фото, PDF, аудио, текст, DOCX."
+                    "Такой файл («$name») Атлас пока не читает. Подойдут: фото, PDF, EPUB, аудио, текст, DOCX."
                 )
             }
         } catch (t: Throwable) {
@@ -123,7 +131,7 @@ class AttachmentStore(private val context: Context) {
         }
     }
 
-    /** Текст, которым поделились из другого приложения или вставили как «список». */
+    /** Текст, которым поделились из другого приложения или вставили вручную. */
     suspend fun importPlainText(text: String, name: String): ImportResult = withContext(Dispatchers.IO) {
         if (text.isBlank()) ImportResult.Rejected("Пустой текст.") else saveText(text.trim(), name)
     }
@@ -318,7 +326,6 @@ class AttachmentStore(private val context: Context) {
             buf.copyOf(off)
         }
         var text = String(bytes, Charsets.UTF_8)
-        // UTF-8 BOM и «битые» кодировки: если слишком много символов замены — пробуем windows-1251
         if (text.isNotEmpty() && text[0] == BOM) text = text.substring(1)
         val bad = text.count { it == REPLACEMENT_CHAR }
         if (bad > text.length / 20) {
@@ -349,21 +356,79 @@ class AttachmentStore(private val context: Context) {
             while (entry != null) {
                 if (entry.name == "word/document.xml") {
                     val xml = String(zip.readBytes(), Charsets.UTF_8)
-                    return xml
-                        .replace("</w:p>", "\n")
-                        .replace(Regex("<w:tab[^>]*/>"), "\t")
-                        .replace(Regex("<w:br[^>]*/>"), "\n")
-                        .replace(Regex("<[^>]+>"), "")
-                        .replace("&amp;", "&")
-                        .replace("&lt;", "<")
-                        .replace("&gt;", ">")
-                        .replace("&quot;", "\"")
-                        .replace("&apos;", "'")
+                    return decodeXmlEntities(
+                        xml.replace("</w:p>", "\n")
+                            .replace(Regex("<w:tab[^>]*/>"), "\t")
+                            .replace(Regex("<w:br[^>]*/>"), "\n")
+                            .replace(Regex("<[^>]+>"), "")
+                    )
                 }
                 entry = zip.nextEntry
             }
         }
         return ""
+    }
+
+    /** Извлечение текста из EPUB-книг без сторонних зависимостей. */
+    private fun epubText(file: File): String {
+        val chunks = ArrayList<Pair<String, String>>()
+        var total = 0
+        ZipInputStream(FileInputStream(file)).use { zip ->
+            var entry = zip.nextEntry
+            while (entry != null) {
+                val name = entry.name.lowercase()
+                if (!entry.isDirectory &&
+                    (name.endsWith(".xhtml") || name.endsWith(".html") || name.endsWith(".htm")) &&
+                    !name.endsWith("nav.xhtml") && !name.endsWith("toc.xhtml")
+                ) {
+                    val raw = String(zip.readBytes(), Charsets.UTF_8)
+                    val clean = decodeXmlEntities(
+                        raw.replace(Regex("<(script|style)[^>]*>[\\s\\S]*?</\\1>", RegexOption.IGNORE_CASE), " ")
+                            .replace(Regex("</(p|div|h[1-6]|li|tr|blockquote)>", RegexOption.IGNORE_CASE), "\n")
+                            .replace(Regex("<br[^>]*>", RegexOption.IGNORE_CASE), "\n")
+                            .replace(Regex("<[^>]+>"), " ")
+                    )
+                        .replace(Regex("[ \\t]+"), " ")
+                        .replace(Regex("\\n{3,}"), "\n\n")
+                        .trim()
+                    if (clean.length >= 20) {
+                        chunks.add(entry.name to clean)
+                        total += clean.length
+                        if (total >= MAX_TEXT_CHARS) break
+                    }
+                }
+                entry = zip.nextEntry
+            }
+        }
+        if (chunks.isEmpty()) return ""
+        val sb = StringBuilder()
+        for ((_, text) in chunks.sortedBy { it.first }) {
+            if (sb.length >= MAX_TEXT_CHARS) break
+            val room = MAX_TEXT_CHARS - sb.length
+            sb.append(if (text.length > room) text.substring(0, room) else text).append("\n\n")
+        }
+        return sb.toString().trim()
+    }
+
+    private fun decodeXmlEntities(s: String): String {
+        var out = s
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&nbsp;", " ")
+            .replace("&mdash;", "—")
+            .replace("&ndash;", "–")
+        out = Regex("&#(\\d+);").replace(out) { m ->
+            val cp = m.groupValues[1].toIntOrNull()
+            if (cp != null && cp in 32..0xFFFF) cp.toChar().toString() else ""
+        }
+        out = Regex("&#x([0-9a-fA-F]+);").replace(out) { m ->
+            val cp = m.groupValues[1].toIntOrNull(16)
+            if (cp != null && cp in 32..0xFFFF) cp.toChar().toString() else ""
+        }
+        return out
     }
 
     private fun normalizeAudioMime(mime: String, ext: String): String = when {
@@ -383,7 +448,6 @@ class AttachmentStore(private val context: Context) {
         private const val MAX_TEXT_CHARS = 120_000
         private const val MAX_IMAGE_DIM = 1600
 
-        /** Невидимые символы задаём кодом, а не литералом, — так они не теряются при копировании файла. */
         private val BOM = Char(0xFEFF)
         private val REPLACEMENT_CHAR = Char(0xFFFD)
 
