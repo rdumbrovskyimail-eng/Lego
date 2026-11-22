@@ -9,16 +9,16 @@ import androidx.room.RoomDatabase
         MessageEntity::class,
         PingEntity::class,
         ProfileEntity::class,
-        VocabEntity::class,
-        StudyListEntity::class,
-        ListItemEntity::class,
-        MistakeEntity::class,
-        TopicProgressEntity::class,
+        AnchorEntity::class,
+        ActionPlanEntity::class,
+        PlanStepEntity::class,
+        TrapEntity::class,
+        SkillProgressEntity::class,
         FactEntity::class,
         JournalEntity::class,
         DailyEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -26,10 +26,10 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun pingDao(): PingDao
     abstract fun profileDao(): ProfileDao
-    abstract fun vocabDao(): VocabDao
-    abstract fun listDao(): ListDao
-    abstract fun mistakeDao(): MistakeDao
-    abstract fun topicDao(): TopicDao
+    abstract fun anchorDao(): AnchorDao
+    abstract fun planDao(): PlanDao
+    abstract fun trapDao(): TrapDao
+    abstract fun skillDao(): SkillDao
     abstract fun factDao(): FactDao
     abstract fun journalDao(): JournalDao
     abstract fun dailyDao(): DailyDao
