@@ -51,8 +51,8 @@ interface SessionDao {
     @Query("UPDATE sessions SET pinned = :pinned WHERE id = :id")
     suspend fun setPinned(id: Long, pinned: Boolean): Int
 
-    @Query("UPDATE sessions SET listId = :listId, askedRef = '' WHERE id = :id")
-    suspend fun setList(id: Long, listId: Long): Int
+    @Query("UPDATE sessions SET planId = :planId, askedRef = '' WHERE id = :id")
+    suspend fun setPlan(id: Long, planId: Long): Int
 
     @Query("UPDATE sessions SET askedRef = :ref WHERE id = :id")
     suspend fun setAsked(id: Long, ref: String): Int
@@ -63,8 +63,8 @@ interface SessionDao {
     @Query("UPDATE sessions SET turnCount = turnCount + 1 WHERE id = :id")
     suspend fun bumpTurn(id: Long): Int
 
-    @Query("UPDATE sessions SET listId = 0, askedRef = '' WHERE listId = :listId")
-    suspend fun detachList(listId: Long): Int
+    @Query("UPDATE sessions SET planId = 0, askedRef = '' WHERE planId = :planId")
+    suspend fun detachPlan(planId: Long): Int
 
     @Query("UPDATE sessions SET mode = :mode, modeArg = :modeArg, emoji = :emoji WHERE id = :id")
     suspend fun setMode(id: Long, mode: String, modeArg: String, emoji: String): Int
@@ -162,6 +162,9 @@ interface PingDao {
     @Query("SELECT kind FROM pings ORDER BY id DESC LIMIT :limit")
     suspend fun recentKinds(limit: Int): List<String>
 
+    @Query("SELECT kbId FROM pings WHERE kbId != '' ORDER BY id DESC LIMIT :limit")
+    suspend fun recentKbIds(limit: Int): List<String>
+
     @Query("SELECT COUNT(*) FROM pings")
     fun observeCount(): Flow<Int>
 
@@ -185,156 +188,153 @@ interface ProfileDao {
 }
 
 @Dao
-interface VocabDao {
-    @Query("SELECT * FROM vocab ORDER BY createdAt DESC, id DESC")
-    fun observeAll(): Flow<List<VocabEntity>>
+interface AnchorDao {
+    @Query("SELECT * FROM anchors ORDER BY createdAt DESC, id DESC")
+    fun observeAll(): Flow<List<AnchorEntity>>
 
-    @Query("SELECT * FROM vocab WHERE keyNorm = :key LIMIT 1")
-    suspend fun byKey(key: String): VocabEntity?
+    @Query("SELECT * FROM anchors WHERE keyNorm = :key LIMIT 1")
+    suspend fun byKey(key: String): AnchorEntity?
 
-    @Query("SELECT * FROM vocab WHERE id = :id")
-    suspend fun get(id: Long): VocabEntity?
+    @Query("SELECT * FROM anchors WHERE id = :id")
+    suspend fun get(id: Long): AnchorEntity?
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insert(e: VocabEntity): Long
+    suspend fun insert(e: AnchorEntity): Long
 
     @Update
-    suspend fun update(e: VocabEntity): Int
+    suspend fun update(e: AnchorEntity): Int
 
-    @Query("DELETE FROM vocab WHERE id = :id")
+    @Query("DELETE FROM anchors WHERE id = :id")
     suspend fun delete(id: Long): Int
 
-    @Query("SELECT * FROM vocab WHERE dueAt <= :now ORDER BY dueAt ASC LIMIT :limit")
-    suspend fun due(now: Long, limit: Int): List<VocabEntity>
+    @Query("SELECT * FROM anchors WHERE dueAt <= :now ORDER BY dueAt ASC LIMIT :limit")
+    suspend fun due(now: Long, limit: Int): List<AnchorEntity>
 
-    @Query("SELECT COUNT(*) FROM vocab WHERE dueAt <= :now")
+    @Query("SELECT COUNT(*) FROM anchors WHERE dueAt <= :now")
     suspend fun dueCount(now: Long): Int
 
-    @Query("SELECT COUNT(*) FROM vocab WHERE dueAt <= :now")
+    @Query("SELECT COUNT(*) FROM anchors WHERE dueAt <= :now")
     fun observeDueCount(now: Long): Flow<Int>
 
-    @Query("SELECT * FROM vocab ORDER BY createdAt DESC, id DESC LIMIT :limit")
-    suspend fun newest(limit: Int): List<VocabEntity>
+    @Query("SELECT * FROM anchors ORDER BY createdAt DESC, id DESC LIMIT :limit")
+    suspend fun newest(limit: Int): List<AnchorEntity>
 
-    @Query("SELECT * FROM vocab WHERE wrong > 0 ORDER BY (wrong - correct) DESC, lastSeenAt DESC LIMIT :limit")
-    suspend fun weakest(limit: Int): List<VocabEntity>
-
-    @Query("SELECT status, COUNT(*) AS n FROM vocab GROUP BY status")
+    @Query("SELECT status, COUNT(*) AS n FROM anchors GROUP BY status")
     suspend fun statusCounts(): List<StatusCount>
 
-    @Query("SELECT status, COUNT(*) AS n FROM vocab GROUP BY status")
+    @Query("SELECT status, COUNT(*) AS n FROM anchors GROUP BY status")
     fun observeStatusCounts(): Flow<List<StatusCount>>
 
-    @Query("SELECT COUNT(*) FROM vocab")
+    @Query("SELECT COUNT(*) FROM anchors")
     suspend fun count(): Int
 
-    @Query("SELECT keyNorm FROM vocab")
+    @Query("SELECT keyNorm FROM anchors")
     suspend fun allKeys(): List<String>
 }
 
 @Dao
-interface ListDao {
-    @Query("SELECT * FROM lists ORDER BY createdAt DESC, id DESC")
-    fun observeLists(): Flow<List<StudyListEntity>>
+interface PlanDao {
+    @Query("SELECT * FROM plans ORDER BY createdAt DESC, id DESC")
+    fun observePlans(): Flow<List<ActionPlanEntity>>
 
-    @Query("SELECT * FROM lists ORDER BY createdAt DESC, id DESC")
-    suspend fun lists(): List<StudyListEntity>
+    @Query("SELECT * FROM plans ORDER BY createdAt DESC, id DESC")
+    suspend fun plans(): List<ActionPlanEntity>
 
-    @Query("SELECT * FROM lists WHERE id = :id")
-    suspend fun getList(id: Long): StudyListEntity?
+    @Query("SELECT * FROM plans WHERE id = :id")
+    suspend fun getPlan(id: Long): ActionPlanEntity?
 
-    @Query("SELECT * FROM lists WHERE id = :id")
-    fun observeList(id: Long): Flow<StudyListEntity?>
-
-    @Insert
-    suspend fun insertList(e: StudyListEntity): Long
-
-    @Query("UPDATE lists SET title = :title WHERE id = :id")
-    suspend fun renameList(id: Long, title: String): Int
-
-    @Query("DELETE FROM lists WHERE id = :id")
-    suspend fun deleteList(id: Long): Int
+    @Query("SELECT * FROM plans WHERE id = :id")
+    fun observePlan(id: Long): Flow<ActionPlanEntity?>
 
     @Insert
-    suspend fun insertItems(items: List<ListItemEntity>): List<Long>
+    suspend fun insertPlan(e: ActionPlanEntity): Long
 
-    @Query("SELECT * FROM list_items WHERE listId = :listId ORDER BY position ASC, id ASC")
-    suspend fun items(listId: Long): List<ListItemEntity>
+    @Query("UPDATE plans SET title = :title WHERE id = :id")
+    suspend fun renamePlan(id: Long, title: String): Int
 
-    @Query("SELECT * FROM list_items WHERE listId = :listId ORDER BY position ASC, id ASC")
-    fun observeItems(listId: Long): Flow<List<ListItemEntity>>
+    @Query("DELETE FROM plans WHERE id = :id")
+    suspend fun deletePlan(id: Long): Int
 
-    @Query("SELECT * FROM list_items WHERE id = :id")
-    suspend fun getItem(id: Long): ListItemEntity?
+    @Insert
+    suspend fun insertSteps(steps: List<PlanStepEntity>): List<Long>
+
+    @Query("SELECT * FROM plan_steps WHERE planId = :planId ORDER BY position ASC, id ASC")
+    suspend fun steps(planId: Long): List<PlanStepEntity>
+
+    @Query("SELECT * FROM plan_steps WHERE planId = :planId ORDER BY position ASC, id ASC")
+    fun observeSteps(planId: Long): Flow<List<PlanStepEntity>>
+
+    @Query("SELECT * FROM plan_steps WHERE id = :id")
+    suspend fun getStep(id: Long): PlanStepEntity?
 
     @Update
-    suspend fun updateItem(e: ListItemEntity): Int
+    suspend fun updateStep(e: PlanStepEntity): Int
 
-    @Query("DELETE FROM list_items WHERE listId = :listId")
-    suspend fun deleteItems(listId: Long): Int
+    @Query("DELETE FROM plan_steps WHERE planId = :planId")
+    suspend fun deleteSteps(planId: Long): Int
 
-    @Query("DELETE FROM list_items WHERE id = :id")
-    suspend fun deleteItem(id: Long): Int
+    @Query("DELETE FROM plan_steps WHERE id = :id")
+    suspend fun deleteStep(id: Long): Int
 
-    @Query("UPDATE list_items SET correct = 0, wrong = 0, streak = 0, lastAt = 0 WHERE listId = :listId")
-    suspend fun resetItems(listId: Long): Int
-
-    @Query(
-        "SELECT listId, COUNT(*) AS total, SUM(CASE WHEN streak >= 2 THEN 1 ELSE 0 END) AS mastered " +
-            "FROM list_items GROUP BY listId"
-    )
-    fun observeProgress(): Flow<List<ListProgress>>
+    @Query("UPDATE plan_steps SET doneCount = 0, skippedCount = 0, streak = 0, lastAt = 0 WHERE planId = :planId")
+    suspend fun resetSteps(planId: Long): Int
 
     @Query(
-        "SELECT listId, COUNT(*) AS total, SUM(CASE WHEN streak >= 2 THEN 1 ELSE 0 END) AS mastered " +
-            "FROM list_items WHERE listId = :listId GROUP BY listId"
+        "SELECT planId, COUNT(*) AS total, SUM(CASE WHEN streak >= 1 THEN 1 ELSE 0 END) AS done " +
+            "FROM plan_steps GROUP BY planId"
     )
-    suspend fun progress(listId: Long): ListProgress?
+    fun observeProgress(): Flow<List<PlanProgress>>
+
+    @Query(
+        "SELECT planId, COUNT(*) AS total, SUM(CASE WHEN streak >= 1 THEN 1 ELSE 0 END) AS done " +
+            "FROM plan_steps WHERE planId = :planId GROUP BY planId"
+    )
+    suspend fun progress(planId: Long): PlanProgress?
 }
 
 @Dao
-interface MistakeDao {
-    @Query("SELECT * FROM mistakes ORDER BY resolved ASC, lastAt DESC")
-    fun observeAll(): Flow<List<MistakeEntity>>
+interface TrapDao {
+    @Query("SELECT * FROM traps ORDER BY resolved ASC, lastAt DESC")
+    fun observeAll(): Flow<List<TrapEntity>>
 
-    @Query("SELECT * FROM mistakes WHERE resolved = 0 ORDER BY times DESC, lastAt DESC LIMIT :limit")
-    suspend fun top(limit: Int): List<MistakeEntity>
+    @Query("SELECT * FROM traps WHERE resolved = 0 ORDER BY times DESC, lastAt DESC LIMIT :limit")
+    suspend fun top(limit: Int): List<TrapEntity>
 
-    @Query("SELECT * FROM mistakes WHERE keyNorm = :key LIMIT 1")
-    suspend fun byKey(key: String): MistakeEntity?
+    @Query("SELECT * FROM traps WHERE keyNorm = :key LIMIT 1")
+    suspend fun byKey(key: String): TrapEntity?
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
-    suspend fun insert(e: MistakeEntity): Long
+    suspend fun insert(e: TrapEntity): Long
 
     @Update
-    suspend fun update(e: MistakeEntity): Int
+    suspend fun update(e: TrapEntity): Int
 
-    @Query("DELETE FROM mistakes WHERE id = :id")
+    @Query("DELETE FROM traps WHERE id = :id")
     suspend fun delete(id: Long): Int
 
-    @Query("SELECT COUNT(*) FROM mistakes WHERE resolved = 0")
+    @Query("SELECT COUNT(*) FROM traps WHERE resolved = 0")
     suspend fun activeCount(): Int
 
-    @Query("UPDATE mistakes SET resolved = :resolved WHERE id = :id")
+    @Query("UPDATE traps SET resolved = :resolved WHERE id = :id")
     suspend fun setResolved(id: Long, resolved: Boolean): Int
 }
 
 @Dao
-interface TopicDao {
-    @Query("SELECT * FROM topic_progress")
-    fun observeAll(): Flow<List<TopicProgressEntity>>
+interface SkillDao {
+    @Query("SELECT * FROM skill_progress")
+    fun observeAll(): Flow<List<SkillProgressEntity>>
 
-    @Query("SELECT * FROM topic_progress")
-    suspend fun all(): List<TopicProgressEntity>
+    @Query("SELECT * FROM skill_progress")
+    suspend fun all(): List<SkillProgressEntity>
 
-    @Query("SELECT * FROM topic_progress WHERE topicId = :id")
-    suspend fun get(id: String): TopicProgressEntity?
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(e: TopicProgressEntity): Long
+    @Query("SELECT * FROM skill_progress WHERE skillId = :id")
+    suspend fun get(id: String): SkillProgressEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsertAll(items: List<TopicProgressEntity>): List<Long>
+    suspend fun upsert(e: SkillProgressEntity): Long
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(items: List<SkillProgressEntity>): List<Long>
 }
 
 @Dao
@@ -377,4 +377,7 @@ interface DailyDao {
 
     @Query("SELECT * FROM daily ORDER BY day DESC LIMIT :limit")
     fun observeRecent(limit: Int): Flow<List<DailyEntity>>
+
+    @Query("SELECT * FROM daily ORDER BY day DESC LIMIT :limit")
+    suspend fun recent(limit: Int): List<DailyEntity>
 }
