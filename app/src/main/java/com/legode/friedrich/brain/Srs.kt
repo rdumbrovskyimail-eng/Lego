@@ -1,4 +1,5 @@
 package com.legode.friedrich.brain
+
 import kotlin.math.max
 import kotlin.math.min
 
