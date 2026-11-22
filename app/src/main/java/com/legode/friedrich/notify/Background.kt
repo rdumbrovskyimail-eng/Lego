@@ -33,12 +33,12 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.TimeUnit
 
 /*
- * Всё, что делает Фридриха «всегда включённым»:
+ * Всё, что делает Атласа «всегда на связи»:
  *  • AlarmScheduler — точный будильник следующего «смс» (срабатывает и в Doze);
- *  • PingAlarmReceiver → PingWorker — пишет сообщение (ИИ или офлайн-банк) и ставит следующий будильник;
+ *  • PingAlarmReceiver → PingWorker — отправляет СМС (ИИ или KnowledgeBase в офлайне) и ставит следующий будильник;
  *  • WatchdogWorker — каждые 15 минут проверяет, что расписание живо, и чинит его;
- *  • BootReceiver — восстанавливает расписание после перезагрузки, обновления, смены времени;
- *  • ReplyReceiver → ReplyWorker — ответ ученика прямо из шторки уведомлений;
+ *  • BootReceiver — восстанавливает расписание после перезагрузки, обновления и смены времени;
+ *  • ReplyReceiver → ReplyWorker — ответ пользователя прямо из шторки уведомлений;
  *  • KeepAliveService — постоянный сервис, который не даёт системе выгрузить приложение.
  */
 
@@ -90,8 +90,8 @@ class AlarmScheduler(private val context: Context) {
 // ───────────────────────── Фоновые задания (WorkManager) ─────────────────────────
 
 object Jobs {
-    private const val UNIQUE_PING = "friedrich_ping"
-    private const val UNIQUE_WATCHDOG = "friedrich_watchdog"
+    private const val UNIQUE_PING = "atlas_ping"
+    private const val UNIQUE_WATCHDOG = "atlas_watchdog"
     const val KEY_FORCE = "force"
     const val KEY_KIND = "kind"
     const val KEY_SESSION = "session"
@@ -138,7 +138,7 @@ object Jobs {
 class PingWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
     override suspend fun getForegroundInfo(): ForegroundInfo =
-        ForegroundInfo(Notifier.WORK_ID, applicationContext.graph().notifier().buildService("Friedrich пишет сообщение…"))
+        ForegroundInfo(Notifier.WORK_ID, applicationContext.graph().notifier().buildService("Атлас пишет сообщение…"))
 
     override suspend fun doWork(): Result {
         val graph = applicationContext.graph()
@@ -161,7 +161,7 @@ class PingWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
 class ReplyWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
     override suspend fun getForegroundInfo(): ForegroundInfo =
-        ForegroundInfo(Notifier.WORK_ID, applicationContext.graph().notifier().buildService("Friedrich отвечает…"))
+        ForegroundInfo(Notifier.WORK_ID, applicationContext.graph().notifier().buildService("Атлас отвечает…"))
 
     override suspend fun doWork(): Result {
         val graph = applicationContext.graph()
@@ -198,7 +198,7 @@ class WatchdogWorker(context: Context, params: WorkerParameters) : CoroutineWork
 
 class PingAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
-        // Страховочный будильник на случай, если задание не успеет выполниться; PingWorker заменит его точным.
+        // Страховочный будильник на случай, если воркер не успеет; PingWorker заменит его точным.
         try {
             context.applicationContext.graph().alarms().arm(Timex.now() + 25 * 60_000L)
         } catch (t: Throwable) {
@@ -271,16 +271,16 @@ class KeepAliveService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        goForeground("Пишу, проверяю, не отстаю 🙂")
+        goForeground("На связи: поддерживаю, встряхиваю, держу курс ⚡")
         val graph = applicationContext.graph()
         val s = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         scope = s
         s.launch {
             graph.runtime().nextPingFlow.collectLatest { at ->
                 val text = when {
-                    !graph.settings().value.pingsEnabled -> "Сообщения выключены в настройках"
-                    at <= 0L -> "Жду подходящего момента…"
-                    else -> "Следующее сообщение ≈ " + Timex.hhmm(at)
+                    !graph.settings().value.pingsEnabled -> "Проактивные СМС выключены в настройках"
+                    at <= 0L -> "Подбираю подходящий момент…"
+                    else -> "Следующее СМС ≈ " + Timex.hhmm(at)
                 }
                 graph.notifier().updateService(text)
             }
@@ -293,7 +293,7 @@ class KeepAliveService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        goForeground("Пишу, проверяю, не отстаю 🙂")
+        goForeground("На связи: поддерживаю, встряхиваю, держу курс ⚡")
         return START_STICKY
     }
 
@@ -332,7 +332,6 @@ class KeepAliveService : Service() {
             try {
                 ContextCompat.startForegroundService(context, Intent(context, KeepAliveService::class.java))
             } catch (t: Throwable) {
-                // Android 12+: запуск из фона может быть запрещён — тогда сервис поднимется при следующем открытии приложения.
                 Logx.w("keep-alive start refused", t)
             }
         }
