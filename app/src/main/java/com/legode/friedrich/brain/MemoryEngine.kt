@@ -6,12 +6,12 @@ import org.json.JSONObject
 
 /**
  * Применяет служебную аналитику из ответа Атласа к базе знаний пользователя:
- *  • балл настроения (mood) и эмоция → дневная траектория и профиль;
- *  • оценка выполнения шага / якоря → интервальное подкрепление (SRS) и прогресс плана;
- *  • anchors → личный банк якорей силы;
+ *  • балл настроения (mood) и точная эмоция → дневная траектория и профиль;
+ *  • оценка выполнения шага / якоря / FSRS-карточки (A.. / S.. / K..);
+ *  • anchors → личный банк якорей силы (FSRS-5);
  *  • traps → журнал когнитивных ловушек ума;
- *  • skills → освоенность психологических навыков;
- *  • facts / profile / plan → долговременная память и планы прорыва.
+ *  • skills → освоенность 60 психологических и интеллектуальных навыков;
+ *  • plan → WOOP-планы («Если–То» и внутренние помехи).
  */
 class MemoryEngine(private val repo: Repository) {
 
@@ -53,7 +53,7 @@ class MemoryEngine(private val repo: Repository) {
             repo.recordMood(reply.mood, now)
         }
 
-        // 2. Оценка ответа / выполнения по последнему заданному элементу.
+        // 2. Оценка ответа / выполнения по последнему заданному элементу (A / S / K).
         var graded = "none"
         if (session.askedRef.isNotEmpty() && reply.result != "none") {
             val id = session.askedRef.drop(1).toLongOrNull()
@@ -61,6 +61,11 @@ class MemoryEngine(private val repo: Repository) {
                 when (session.askedRef.first()) {
                     'A' -> {
                         repo.gradeAnchor(id, reply.result, now)
+                        graded = reply.result
+                    }
+
+                    'K' -> {
+                        repo.reviewCardFsrs(id, Srs.ratingFromDialogResult(reply.result), now)
                         graded = reply.result
                     }
 
@@ -102,7 +107,7 @@ class MemoryEngine(private val repo: Repository) {
             if (t.skillId.isNotEmpty() && t.skillId !in skillIds) repo.applySkill(t.skillId, -1, now)
         }
 
-        // 5. Практика навыков устойчивости.
+        // 5. Практика психологических и интеллектуальных навыков.
         for (s in reply.skills) repo.applySkill(s.id, s.d, now)
 
         // 6. Факты и профиль.
@@ -118,13 +123,29 @@ class MemoryEngine(private val repo: Repository) {
         }
         if (reply.stage.isNotEmpty() && session.mode == Skills.DIAGNOSTIC) repo.applyStageFloor(reply.stage)
 
-        // 7. Новый план прорыва.
+        // 7. Новый WOOP-план прорыва.
         var createdTitle = ""
         var createdCount = 0
         var newIds: List<Long> = emptyList()
         val plan = reply.plan
         if (plan != null && plan.steps.isNotEmpty()) {
-            val created = repo.createPlan(plan.title, plan.steps.map { it.step to it.why }, session.id, now)
+            val woopSteps = plan.steps.map { st ->
+                Repository.WoopStepInput(
+                    step = st.step,
+                    why = st.why,
+                    obstacle = st.obstacle,
+                    ifThenRule = st.ifThenRule
+                )
+            }
+            val created = repo.createWoopPlan(
+                title = plan.title,
+                wish = plan.wish,
+                outcome = plan.outcome,
+                mainObstacle = plan.mainObstacle,
+                steps = woopSteps,
+                sessionId = session.id,
+                now = now
+            )
             planId = created.first
             newIds = created.second
             createdTitle = plan.title
@@ -141,7 +162,7 @@ class MemoryEngine(private val repo: Repository) {
             repo.addXp(25, now)
         }
 
-        // 9. Ссылка на новый шаг / якорь.
+        // 9. Ссылка на новый шаг / якорь / карточку.
         val asked = resolveAsked(reply.asked, newIds, planId)
 
         val stageAfter = repo.recomputeStage()
@@ -168,7 +189,6 @@ class MemoryEngine(private val repo: Repository) {
         else -> 0
     }
 
-    /** Проверяет ссылку на шаг или якорь; "N3" превращает в реальный id шага нового плана. */
     private suspend fun resolveAsked(raw: String, newIds: List<Long>, planId: Long): String {
         if (raw.isEmpty()) return ""
         val n = raw.drop(1).toLongOrNull() ?: return ""
@@ -179,6 +199,7 @@ class MemoryEngine(private val repo: Repository) {
             }
 
             'A' -> if (repo.anchorDao.get(n) != null) raw else ""
+            'K' -> if (repo.knowledgeCardDao.get(n) != null) raw else ""
             'S' -> {
                 val step = repo.planDao.getStep(n)
                 if (step != null && (planId == 0L || step.planId == planId)) raw else ""
