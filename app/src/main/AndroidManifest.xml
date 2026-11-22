@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Сеть: Gemini API -->
+    <!-- Сеть: Gemini API, веб-поиск и чтение URL -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
@@ -21,8 +21,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
-    <!-- Голосовые сообщения -->
+    <!-- Голосовые сообщения и биометрический замок -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
 
     <uses-feature
         android:name="android.hardware.microphone"
@@ -62,32 +63,30 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- «Поделиться» текстом/скриншотом/PDF из других приложений → в главный чат с Атласом -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
                 <data android:mimeType="image/*" />
+                <data android:mimeType="audio/*" />
                 <data android:mimeType="application/pdf" />
+                <data android:mimeType="application/epub+zip" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
             </intent-filter>
         </activity>
 
-        <!-- Будильник проактивного СМС -->
         <receiver
             android:name=".notify.PingAlarmReceiver"
             android:exported="false" />
 
-        <!-- Ответ прямо из шторки уведомлений -->
         <receiver
             android:name=".notify.ReplyReceiver"
             android:exported="false" />
 
-        <!-- Кнопки уведомления: «Прочитано», «Отложить» -->
         <receiver
             android:name=".notify.NotificationActionReceiver"
             android:exported="false" />
 
-        <!-- Восстановление расписания после перезагрузки / обновления / смены времени -->
         <receiver
             android:name=".notify.BootReceiver"
             android:exported="true">
@@ -101,7 +100,6 @@
             </intent-filter>
         </receiver>
 
-        <!-- Постоянный сервис: держит процесс живым, чтобы Атлас оставался на связи -->
         <service
             android:name=".notify.KeepAliveService"
             android:exported="false"
@@ -111,7 +109,6 @@
                 android:value="Persistent psycho-emotional support and proactive motivational coaching companion" />
         </service>
 
-        <!-- Отдача фото с камеры и экспортов -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"
