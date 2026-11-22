@@ -222,8 +222,9 @@ class MainViewModel @Inject constructor(
             settings.update {
                 it.copy(
                     onboarded = true,
-                    pingIntensity = intensity.coerceIn(0, 4),
-                    pushiness = pushiness.coerceIn(0, 2)
+                    // Если человеку сейчас тяжело — стартуем бережно и редко, что бы ни было выбрано.
+                    pingIntensity = if (selfState == 0) intensity.coerceIn(0, 1) else intensity.coerceIn(0, 4),
+                    pushiness = if (selfState == 0) 0 else pushiness.coerceIn(0, 2)
                 )
             }
             val home = repo.ensureHome()
@@ -634,7 +635,7 @@ class MainViewModel @Inject constructor(
         keyChecking = true
         keyCheck = "Проверяю…"
         viewModelScope.launch {
-            val result = brain.testKey(clean, settings.value.model)
+            val result = brain.testKey(clean)
             keyChecking = false
             when (result) {
                 is GeminiClient.Result.Ok -> {

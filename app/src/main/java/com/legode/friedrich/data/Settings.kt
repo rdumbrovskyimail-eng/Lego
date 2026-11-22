@@ -11,28 +11,22 @@ import kotlinx.coroutines.flow.asStateFlow
 data class Settings(
     val onboarded: Boolean = false,
     val hasApiKey: Boolean = false,
-    /** Быстрая модель для повседневного чата и пингов. */
-    val model: String = DEFAULT_MODEL,
-    /** Усиленная модель для Воскресного синтеза, анализа книг/PDF и глубоких дебатов. */
-    val deepModel: String = DEFAULT_DEEP_MODEL,
-    /** Уровень «размышлений» модели: auto | minimal | low | medium | high. */
-    val thinking: String = "low",
     /** Вкладывать ли в каждый запрос весь атлас протоколов (по умолчанию выключено: работает точечный RAG). */
     val fullReference: Boolean = false,
     /** Потоковый вывод ответов в реальном времени (SSE). */
     val streamingEnabled: Boolean = true,
     /** Разрешать модели обращаться к Google Поиску и читать статьи по URL при анализе источников/фактов. */
     val webSearchEnabled: Boolean = true,
-    /** Напористость Атласа: 0 — бережно, 1 — сбалансированно, 2 — жёсткий прорыв ⚡. */
-    val pushiness: Int = 2,
+    /** Напористость Атласа: 0 — бережно, 1 — сбалансированно, 2 — жёсткий прорыв ⚡. В кризисе и сутки после него напор отключается всегда. */
+    val pushiness: Int = 1,
     /** Глобальный сократический режим («не думай за меня», анти-оффлоадинг). */
     val socraticByDefault: Boolean = false,
     val pingsEnabled: Boolean = true,
     /** Частота «смс»: 0 редко … 4 плотный режим. См. PingScheduler.INTENSITY. */
-    val pingIntensity: Int = 3,
+    val pingIntensity: Int = 1,
     val quietStartMin: Int = 22 * 60 + 30,
     val quietEndMin: Int = 7 * 60 + 30,
-    val dailyPingCap: Int = 60,
+    val dailyPingCap: Int = 16,
     /** В какой чат слать «смс»; 0 — в главный. */
     val pingSessionId: Long = 0,
     /** Постоянный сервис с тихим уведомлением — приложение «всегда включено». */
@@ -52,24 +46,11 @@ data class Settings(
     val screenshotBlock: Boolean = false
 ) {
     companion object {
-        const val DEFAULT_MODEL = "gemini-3.1-flash-lite"
-        const val DEFAULT_DEEP_MODEL = "gemini-3-flash-preview"
+        /** Единственная модель приложения: стабильная Gemini 3.1 Flash-Lite. Используется во всех запросах. */
+        const val MODEL = "gemini-3.1-flash-lite"
 
-        /** Запасные быстрые модели на случай, если выбранная недоступна (404). */
-        val FALLBACK_MODELS = listOf(
-            "gemini-3.1-flash-lite",
-            "gemini-3.1-flash-lite-preview",
-            "gemini-2.5-flash-lite",
-            "gemini-flash-lite-latest"
-        )
-
-        /** Пресеты усиленных моделей для глубокого анализа. */
-        val DEEP_MODELS = listOf(
-            "gemini-3-flash-preview",
-            "gemini-3.1-pro-preview",
-            "gemini-2.5-flash",
-            "gemini-3.1-flash-lite"
-        )
+        /** Единый уровень раздумий для всех запросов (minimal | low | medium | high). */
+        const val THINKING_LEVEL = "medium"
     }
 }
 
@@ -108,9 +89,6 @@ class SettingsStore(context: Context) {
         return Settings(
             onboarded = prefs.getBoolean(K_ONBOARDED, d.onboarded),
             hasApiKey = !prefs.getString(K_API_KEY, "").isNullOrEmpty(),
-            model = prefs.getString(K_MODEL, d.model) ?: d.model,
-            deepModel = prefs.getString(K_DEEP_MODEL, d.deepModel) ?: d.deepModel,
-            thinking = prefs.getString(K_THINKING, d.thinking) ?: d.thinking,
             fullReference = prefs.getBoolean(K_FULL_REF, d.fullReference),
             streamingEnabled = prefs.getBoolean(K_STREAMING, d.streamingEnabled),
             webSearchEnabled = prefs.getBoolean(K_WEB_SEARCH, d.webSearchEnabled),
@@ -137,9 +115,6 @@ class SettingsStore(context: Context) {
     private fun save(s: Settings) {
         prefs.edit()
             .putBoolean(K_ONBOARDED, s.onboarded)
-            .putString(K_MODEL, s.model)
-            .putString(K_DEEP_MODEL, s.deepModel)
-            .putString(K_THINKING, s.thinking)
             .putBoolean(K_FULL_REF, s.fullReference)
             .putBoolean(K_STREAMING, s.streamingEnabled)
             .putBoolean(K_WEB_SEARCH, s.webSearchEnabled)
@@ -173,7 +148,8 @@ class SettingsStore(context: Context) {
     fun apiKey(): String {
         cachedKey?.let { return it }
         val opened = SecretBox.open(prefs.getString(K_API_KEY, "") ?: "")
-        cachedKey = opened
+        // Пустой результат при непустом шифртексте — сбой Keystore: не запоминаем, попробуем в следующий раз.
+        if (opened.isNotEmpty()) cachedKey = opened
         return opened
     }
 
@@ -195,9 +171,6 @@ class SettingsStore(context: Context) {
     private companion object {
         const val K_ONBOARDED = "onboarded"
         const val K_API_KEY = "api_key_sealed"
-        const val K_MODEL = "model"
-        const val K_DEEP_MODEL = "deep_model"
-        const val K_THINKING = "thinking"
         const val K_FULL_REF = "full_reference"
         const val K_STREAMING = "streaming_enabled"
         const val K_WEB_SEARCH = "web_search_enabled"
@@ -266,6 +239,20 @@ class RuntimeState(context: Context) {
     var lastError: String
         get() = prefs.getString("last_error", "") ?: ""
         set(v) = prefs.edit().putString("last_error", v).apply()
+
+    /** До какого момента действует бережный режим после сигнала кризиса. */
+    var crisisUntil: Long
+        get() = prefs.getLong("crisis_until", 0L)
+        set(v) {
+            prefs.edit().putLong("crisis_until", v).commit()
+        }
+
+    fun aftercareActive(now: Long): Boolean = crisisUntil > now
+
+    /** Включает (или продлевает) бережный режим на [hours] часов от [now]. */
+    fun markCrisis(now: Long, hours: Int) {
+        crisisUntil = maxOf(crisisUntil, now + hours * 3_600_000L)
+    }
 
     fun reset() {
         prefs.edit().clear().apply()

@@ -75,7 +75,34 @@ object PingScheduler {
  */
 class PingPlanner(private val repo: Repository, private val runtime: RuntimeState) {
 
-    suspend fun plan(session: SessionEntity, s: Settings, now: Long, rnd: Random, forcedKind: String?): PingPlan {
+    suspend fun plan(
+        session: SessionEntity,
+        s: Settings,
+        now: Long,
+        rnd: Random,
+        forcedKind: String?,
+        aftercare: Boolean = false
+    ): PingPlan {
+        if (aftercare) {
+            return build(SAFE_CHECKIN, session, repo.masteryMap(), repo.profile().lastMood, now, rnd, 0, 0, Timex.isNightRisk(now), false)
+        }
+        val raw = planRaw(session, s, now, rnd, forcedKind)
+        // Низкое состояние: никаких «дожимов» — любое СМС только бережное.
+        return if (isLowTrajectory() && !raw.gentleOnly) {
+            raw.copy(gentleOnly = true, preferredTones = setOf("calm", "deep"), preferredKinds = raw.preferredKinds + "practice")
+        } else {
+            raw
+        }
+    }
+
+    private suspend fun isLowTrajectory(): Boolean {
+        val recentDaily = repo.dailyDao.recent(3).filter { it.moodCount > 0 }
+        val avg = if (recentDaily.isEmpty()) 0.0
+        else recentDaily.sumOf { it.moodSum }.toDouble() / recentDaily.sumOf { it.moodCount }.coerceAtLeast(1)
+        return (avg in 0.1..4.2) || (repo.profile().lastMood in 1..4)
+    }
+
+    private suspend fun planRaw(session: SessionEntity, s: Settings, now: Long, rnd: Random, forcedKind: String?): PingPlan {
         val today = Timex.today()
         val hour = Timex.dateTime(now).hour
         val night = Timex.isNightRisk(now)
@@ -127,7 +154,7 @@ class PingPlanner(private val repo: Repository, private val runtime: RuntimeStat
             return build("evening", session, mastery, profile.lastMood, now, rnd, unanswered, silentDays, false, lowReceptivityNow)
         }
 
-        if (unanswered >= 3 && rnd.nextInt(100) < 40) {
+        if (unanswered >= 3 && !lowTrajectory && rnd.nextInt(100) < 40) {
             return build("nudge", session, mastery, profile.lastMood, now, rnd, unanswered, silentDays, false, lowReceptivityNow)
         }
 
@@ -140,14 +167,15 @@ class PingPlanner(private val repo: Repository, private val runtime: RuntimeStat
         if (dueAnchors > 0) weights["anchor_due"] = 18 + minOf(dueAnchors, 8) * 2
         if (dueCards > 0 && !lowTrajectory) weights["card_due"] = 22 + minOf(dueCards, 8) * 2
         if ((duePreds > 0 || dueDecisions > 0) && !lowTrajectory) weights["prediction_check"] = 24
-        if (session.planId != 0L) weights["plan_push"] = if (lowReceptivityNow) 18 else 34
-        if (repo.trapDao.activeCount() > 0) weights["trap_hunt"] = 15
+        // При низком состоянии — никаких «дожимов», дуэлей и охоты на ловушки: только опора.
+        if (session.planId != 0L && !lowTrajectory) weights["plan_push"] = if (lowReceptivityNow) 18 else 34
+        if (repo.trapDao.activeCount() > 0 && !lowTrajectory) weights["trap_hunt"] = 15
         if (lowTrajectory) weights["mood_rescue"] = 32
-        weights["breakthrough"] = if (lowTrajectory) 14 else 24
+        if (!lowTrajectory) weights["breakthrough"] = 24
         weights["philosophy"] = 16
         weights["mental_model"] = if (lowTrajectory) 8 else 22
-        weights["debias_duel"] = if (lowTrajectory || lowReceptivityNow) 6 else 18
-        weights["cbt_check"] = 16
+        if (!lowTrajectory) weights["debias_duel"] = if (lowReceptivityNow) 6 else 18
+        if (!lowTrajectory) weights["cbt_check"] = 16
         weights["calm_reset"] = if (lowTrajectory) 18 else 6
         weights["halt_check"] = if (Timex.circadianPhase(now) == Timex.CircadianPhase.AFTERNOON_DIP) 14 else 5
 
@@ -155,7 +183,7 @@ class PingPlanner(private val repo: Repository, private val runtime: RuntimeStat
         for (k in recent) weights[k]?.let { weights[k] = maxOf(1, it / 5) }
 
         var roll = rnd.nextInt(weights.values.sum().coerceAtLeast(1))
-        var chosen = "breakthrough"
+        var chosen = if (lowTrajectory) "calm_reset" else "breakthrough"
         for ((k, w) in weights) {
             if (roll < w) {
                 chosen = k
@@ -196,6 +224,19 @@ class PingPlanner(private val repo: Repository, private val runtime: RuntimeStat
         } else ""
 
         when (kind) {
+            SAFE_CHECKIN -> return PingPlan(
+                kind = kind,
+                task = "БЕРЕЖНЫЙ ЧЕК-ИН ПОСЛЕ ТЯЖЁЛОГО РАЗГОВОРА. Недавно человеку было очень плохо (возможны мысли о смерти). " +
+                    "Одним коротким тёплым сообщением (2–3 строки) спроси, как он сейчас и в безопасности ли. " +
+                    "Без заданий, напора, философии и разбора ошибок. Напомни, что можно написать сюда или позвонить: " +
+                    "${SafetyGuard.RESOURCES_SHORT}. Кнопки quick: «Я в безопасности», «Всё ещё тяжело», «Нужны контакты помощи».",
+                topicIds = listOf("breathing_reset", "grounding_54321"),
+                states = setOf("anxiety", "depression"),
+                preferredTones = setOf("calm"),
+                preferredKinds = setOf("practice"),
+                gentleOnly = true
+            )
+
             "morning" -> {
                 val sk = pickSkill()
                 return PingPlan(
@@ -236,16 +277,16 @@ class PingPlanner(private val repo: Repository, private val runtime: RuntimeStat
                 task = "ВОЗВРАЩЕНИЕ ИЗ ТИШИНЫ. Человек не выходил на связь $silentDays дн. Напиши прямо, по-товарищески, без стыда и морализаторства: спроси, как он от 1 до 10, и предложи одну кнопку входа.",
                 topicIds = listOf("meaning_loneliness", "action_activation"),
                 states = setOf("loneliness", "depression", "apathy"),
-                preferredTones = setOf("firm", "push"),
+                preferredTones = setOf("calm", "firm"),
                 preferredKinds = setOf("breakthrough", "cbt")
             )
 
             "nudge" -> return PingPlan(
                 kind = kind,
-                task = "НАПОРИСТЫЙ ДОЖИМ. Пропущено $unanswered пингов. Коротко и с живым характером союзника спроси: это апатия, перегруз или избегание 1 конкретного дела? Дай 3 точные кнопки.$brevityHint",
+                task = "МЯГКИЙ ЧЕК-ИН. Человек давно не отвечает — без упрёков и без счёта пропущенных сообщений. Коротко, тепло и с живым характером спроси, что сейчас ближе: усталость, перегруз или избегание одного дела. Дай 3 лёгкие кнопки.$brevityHint",
                 topicIds = listOf("action_120sec"),
                 states = setOf("procrastination", "apathy", "deadend"),
-                preferredTones = setOf("push", "firm"),
+                preferredTones = setOf("firm", "calm"),
                 preferredKinds = setOf("breakthrough", "cbt")
             )
 
@@ -424,5 +465,10 @@ class PingPlanner(private val repo: Repository, private val runtime: RuntimeStat
                 )
             }
         }
+    }
+
+    companion object {
+        /** Бережная проверка безопасности в режиме «после кризиса». */
+        const val SAFE_CHECKIN = "safe_checkin"
     }
 }

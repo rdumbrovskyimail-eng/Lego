@@ -151,23 +151,31 @@ class Repository(private val db: AppDatabase, private val attachments: Attachmen
             clearSession(id)
             return
         }
-        attachments.deleteAll(messageDao.attachmentsOf(id))
-        messageDao.deleteBySession(id)
-        pingDao.deleteBySession(id)
-        sessionDao.delete(id)
+        val files = db.withTransaction {
+            val atts = messageDao.attachmentsOf(id)
+            messageDao.deleteBySession(id)
+            pingDao.deleteBySession(id)
+            sessionDao.delete(id)
+            atts
+        }
+        attachments.deleteAll(files) // файлы — только после успешного коммита
     }
 
     suspend fun clearSession(id: Long) {
-        val s = sessionDao.get(id) ?: return
-        attachments.deleteAll(messageDao.attachmentsOf(id))
-        messageDao.deleteBySession(id)
-        pingDao.deleteBySession(id)
-        sessionDao.update(
-            s.copy(
-                unread = 0, lastPreview = "", summary = "", summarizedUpToId = 0, askedRef = "",
-                turnCount = 0, draft = "", updatedAt = Timex.now()
+        val files = db.withTransaction {
+            val s = sessionDao.get(id) ?: return@withTransaction emptyList<String>()
+            val atts = messageDao.attachmentsOf(id)
+            messageDao.deleteBySession(id)
+            pingDao.deleteBySession(id)
+            sessionDao.update(
+                s.copy(
+                    unread = 0, lastPreview = "", summary = "", summarizedUpToId = 0, askedRef = "",
+                    turnCount = 0, draft = "", updatedAt = Timex.now()
+                )
             )
-        )
+            atts
+        }
+        attachments.deleteAll(files) // файлы — только после успешного коммита
     }
 
     // ───────────────────────── Сообщения ─────────────────────────
@@ -251,8 +259,7 @@ class Repository(private val db: AppDatabase, private val attachments: Attachmen
             last.role == ROLE_USER -> "Ты: " + Norm.oneLine(last.text, 90)
             else -> Norm.oneLine(last.text, 90)
         }
-        val s = sessionDao.get(sessionId) ?: return
-        sessionDao.update(s.copy(lastPreview = preview))
+        sessionDao.setPreview(sessionId, preview)
     }
 
     suspend fun recordPing(sessionId: Long, messageId: Long, kind: String, source: String, kbId: String, now: Long) {

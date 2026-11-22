@@ -85,8 +85,8 @@ fun OnboardingScreen(main: MainViewModel) {
     var name by remember { mutableStateOf("") }
     var selfState by remember { mutableIntStateOf(1) }
     var goal by remember { mutableStateOf("") }
-    var pushChoice by remember { mutableIntStateOf(0) }
-    var intensity by remember { mutableIntStateOf(3) }
+    var pushChoice by remember { mutableIntStateOf(1) }
+    var intensity by remember { mutableIntStateOf(1) }
     var refresh by remember { mutableIntStateOf(0) }
     val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
 
@@ -128,10 +128,15 @@ fun OnboardingScreen(main: MainViewModel) {
                     Bullet("🎓", "Спарринг для интеллекта", "Режимы «Учитель Фейнмана», «Стилменинг», «Продуктивный провал» и 60 моделей системного и критического мышления.")
                     Bullet("🧬", "Любые книги и статьи → в память FSRS", "Закидывай PDF, EPUB, ссылки или фото страниц — соберу выжимку, критику и карточки активного припоминания.")
                     Bullet("🎯", "Лаборатория решений и Brier Score", "Pre-mortem до выбора, прогнозы в процентах и честная кривая калибровки уверенности.")
+                    Text(
+                        "Атлас — ИИ-собеседник, а не врач и не психотерапевт: он не ставит диагнозов и не заменяет лечение. " +
+                            "Если есть угроза жизни — звони 112. Твои сообщения, голосовые и файлы отправляются в Google Gemini API, чтобы получить ответ.",
+                        color = Fx.TextFaint, style = MaterialTheme.typography.bodySmall
+                    )
                 }
 
                 1 -> {
-                    Title("Ключ Gemini API", "Работает на быстрой Gemini 3.1 Flash-Lite и усиленной Gemini 3 Flash. Ключ хранится зашифрованным на твоём телефоне.")
+                    Title("Ключ Gemini API", "Все ответы — на Gemini 3.1 Flash-Lite. Ключ хранится зашифрованным на твоём телефоне.")
                     OutlinedTextField(value = key, onValueChange = { key = it; keyOk = false }, label = { Text("API-ключ") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Chip(if (main.keyChecking) "Проверяю…" else "Проверить ключ", onClick = {

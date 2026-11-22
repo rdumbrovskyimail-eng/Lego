@@ -128,10 +128,14 @@ class Brain(
                 setTyping(sessionId, true)
                 try {
                     val now = Timex.now()
-                    val built = builder.chatTurn(session, kickoff = false, now = now)
+                    val built = builder.chatTurn(session, kickoff = false, now = now, aftercare = runtime.aftercareActive(now))
+                    val assessment = built.assessment
+                    val userName = repo.profile().name
+                    val doneId = maxOf(built.lastUserId, lastUser.id)
 
-                    if (built.assessment.level == SafetyGuard.RiskLevel.CRISIS) {
-                        val userName = repo.profile().name
+                    // 1. Кризис: проверенный ответ без участия модели (работает офлайн) + бережный режим на сутки.
+                    if (assessment.level == SafetyGuard.RiskLevel.CRISIS) {
+                        runtime.markCrisis(now, SafetyGuard.AFTERCARE_HOURS)
                         val crisisReply = Reply(
                             messages = SafetyGuard.crisisResponse(userName),
                             quick = SafetyGuard.crisisQuickReplies(),
@@ -139,8 +143,22 @@ class Brain(
                             emotion = "кризис"
                         )
                         if (lastUser.status != "ok") repo.messageDao.setStatus(lastUser.id, "ok", "")
-                        deliver(session, crisisReply, "chat", paced = false, usage = null)
-                        handled[sessionId] = maxOf(built.lastUserId, lastUser.id)
+                        deliver(session, crisisReply, "chat", paced = false, usage = null, gentle = true)
+                        handled[sessionId] = doneId
+                        break
+                    }
+
+                    // 2. Прямая просьба о контактах помощи — тоже мгновенно и без модели.
+                    if (assessment.helpRequested) {
+                        runtime.markCrisis(now, SafetyGuard.AFTERCARE_HOURS)
+                        val helpReply = Reply(
+                            messages = SafetyGuard.resourcesResponse(userName),
+                            quick = SafetyGuard.resourcesQuickReplies(),
+                            emotion = "тяжесть"
+                        )
+                        if (lastUser.status != "ok") repo.messageDao.setStatus(lastUser.id, "ok", "")
+                        deliver(session, helpReply, "chat", paced = false, usage = null, gentle = true)
+                        handled[sessionId] = doneId
                         break
                     }
 
@@ -148,9 +166,9 @@ class Brain(
                         !built.useSearch && !built.useUrlContext &&
                         visibleSession.value == sessionId
 
-                    val result = if (canStream) {
+                    var result = if (canStream) {
                         var lastEmit = 0L
-                        streamCall(built, Protocol.chatSchema, 6000, 2) { acc ->
+                        streamCall(built, Protocol.chatSchema, TOKENS_CHAT, 2) { acc ->
                             val t = System.currentTimeMillis()
                             if (t - lastEmit >= 75L) {
                                 val parts = Protocol.extractPartialMessages(acc)
@@ -161,22 +179,28 @@ class Brain(
                             }
                         }
                     } else {
-                        call(built, Protocol.chatSchema, 6000, 2)
+                        call(built, Protocol.chatSchema, TOKENS_CHAT, 2)
                     }
 
                     setStreaming(sessionId, emptyList())
 
+                    // Битый или пустой JSON — один тихий повтор обычным запросом.
+                    var reply = (result as? GeminiClient.Result.Ok)?.let { Protocol.parse(it.text) }
+                    if (result is GeminiClient.Result.Ok && reply == null) {
+                        result = call(built, Protocol.chatSchema, TOKENS_CHAT, 1)
+                        reply = (result as? GeminiClient.Result.Ok)?.let { Protocol.parse(it.text) }
+                    }
+
                     if (result is GeminiClient.Result.Fail) {
-                        if (result.kind == GeminiClient.Result.Kind.BLOCKED) {
-                            val userName = repo.profile().name
+                        if (result.kind == GeminiClient.Kind.BLOCKED) {
                             val fallbackReply = Reply(
-                                messages = SafetyGuard.blockedFallback(built.assessment.level, userName),
-                                quick = listOf("Нужно заземление 🌊", "Разберём по фактам", "Давай дальше"),
+                                messages = SafetyGuard.blockedFallback(assessment.level, userName),
+                                quick = listOf("Нужно заземление 🌊", "Мне очень тяжело", "Давай дальше"),
                                 emotion = "тяжесть"
                             )
                             if (lastUser.status != "ok") repo.messageDao.setStatus(lastUser.id, "ok", "")
-                            deliver(session, fallbackReply, "chat", paced = paced, usage = null)
-                            handled[sessionId] = maxOf(built.lastUserId, lastUser.id)
+                            deliver(session, fallbackReply, "chat", paced = paced, usage = null, gentle = true)
+                            handled[sessionId] = doneId
                             break
                         }
 
@@ -187,15 +211,28 @@ class Brain(
                     }
 
                     val ok = result as GeminiClient.Result.Ok
-                    val reply = Protocol.parse(ok.text)
                     if (reply == null) {
                         failure = "Ответ сорвался. Нажми «Повторить»."
                         markFailed(lastUser.id, failure)
                         break
                     }
+
+                    // 3. Второй контур: модель распознала скрытый риск — бережный режим и гарантированные контакты помощи.
+                    var finalReply: Reply = reply
+                    if (reply.risk == "crisis") {
+                        runtime.markCrisis(now, SafetyGuard.AFTERCARE_HOURS)
+                        if (reply.messages.none { it.contains("112") }) {
+                            finalReply = reply.copy(
+                                messages = reply.messages + ("Если становится опасно — пожалуйста, не оставайся с этим один на один:\n" + SafetyGuard.RESOURCES)
+                            )
+                        }
+                    }
                     if (lastUser.status != "ok") repo.messageDao.setStatus(lastUser.id, "ok", "")
-                    deliver(session, reply, "chat", paced = paced && !canStream, usage = ok)
-                    handled[sessionId] = maxOf(built.lastUserId, lastUser.id)
+                    deliver(
+                        session, finalReply, "chat", paced = paced && !canStream, usage = ok,
+                        gentle = assessment.suppressPushy || reply.risk != "none"
+                    )
+                    handled[sessionId] = doneId
                 } catch (t: Throwable) {
                     Logx.e("respond failed", t)
                     failure = "Внутренняя ошибка: " + (t.message ?: t.javaClass.simpleName)
@@ -228,8 +265,8 @@ class Brain(
             setTyping(sessionId, true)
             try {
                 val now = Timex.now()
-                val built = builder.chatTurn(session, kickoff = true, now = now)
-                val result = call(built, Protocol.chatSchema, 4000, 1)
+                val built = builder.chatTurn(session, kickoff = true, now = now, aftercare = runtime.aftercareActive(now))
+                val result = call(built, Protocol.chatSchema, TOKENS_CHAT, 1)
                 val reply = if (result is GeminiClient.Result.Ok) Protocol.parse(result.text) else null
                 if (reply != null) {
                     deliver(session, reply, "chat", paced = true, usage = result as GeminiClient.Result.Ok)
@@ -261,34 +298,25 @@ class Brain(
         }
     }
 
+    /** Все запросы идут в одну модель ([Settings.MODEL]) с одним уровнем раздумий ([Settings.THINKING_LEVEL]). */
+    private fun request(built: ContextBuilder.Built, schema: JSONObject, maxTokens: Int, retries: Int) = GeminiClient.Request(
+        system = built.system,
+        parts = built.parts,
+        turns = built.turns,
+        schema = schema,
+        jsonMode = true,
+        maxTokens = maxTokens,
+        retries = retries,
+        useSearch = built.useSearch,
+        useUrlContext = built.useUrlContext
+    )
+
     private suspend fun call(
         built: ContextBuilder.Built,
         schema: JSONObject,
         maxTokens: Int,
-        retries: Int,
-        thinking: String? = null,
-        useDeepModel: Boolean = false
-    ): GeminiClient.Result {
-        val s = settings.value
-        val model = if (useDeepModel) s.deepModel else s.model
-        val fallbacks = if (useDeepModel) Settings.DEEP_MODELS + Settings.FALLBACK_MODELS else Settings.FALLBACK_MODELS
-        return gemini.generate(
-            settings.apiKey(),
-            model,
-            GeminiClient.Request(
-                system = built.system,
-                parts = built.parts,
-                schema = schema,
-                jsonMode = true,
-                maxTokens = maxTokens,
-                thinking = thinking ?: s.thinking,
-                retries = retries,
-                useSearch = built.useSearch,
-                useUrlContext = built.useUrlContext
-            ),
-            fallbackModels = fallbacks
-        )
-    }
+        retries: Int
+    ): GeminiClient.Result = gemini.generate(settings.apiKey(), request(built, schema, maxTokens, retries))
 
     private suspend fun streamCall(
         built: ContextBuilder.Built,
@@ -296,36 +324,18 @@ class Brain(
         maxTokens: Int,
         retries: Int,
         onDelta: suspend (String) -> Unit
-    ): GeminiClient.Result {
-        val s = settings.value
-        return gemini.streamGenerate(
-            settings.apiKey(),
-            s.model,
-            GeminiClient.Request(
-                system = built.system,
-                parts = built.parts,
-                schema = schema,
-                jsonMode = true,
-                maxTokens = maxTokens,
-                thinking = s.thinking,
-                retries = retries,
-                useSearch = built.useSearch,
-                useUrlContext = built.useUrlContext
-            ),
-            fallbackModels = Settings.FALLBACK_MODELS,
-            onAccumulatedText = onDelta
-        )
-    }
+    ): GeminiClient.Result = gemini.streamGenerate(settings.apiKey(), request(built, schema, maxTokens, retries), onDelta)
 
     private suspend fun deliver(
         session: SessionEntity,
         reply: Reply,
         kind: String,
         paced: Boolean,
-        usage: GeminiClient.Result.Ok?
+        usage: GeminiClient.Result.Ok?,
+        gentle: Boolean = false
     ) {
         val now = Timex.now()
-        val delta = memory.apply(session, reply, now)
+        val delta = memory.apply(session, reply, now, gentle)
         val texts = reply.messages
         val meta = buildMeta(delta, usage)
         val pacing = paced && settings.value.humanPacing
@@ -357,12 +367,12 @@ class Brain(
 
         val fresh = repo.sessionDao.get(session.id)
         if (fresh != null) {
-            var updated = fresh.copy(askedRef = delta.newAskedRef, turnCount = fresh.turnCount + 1)
-            if (delta.newPlanId >= 0L) updated = updated.copy(planId = delta.newPlanId)
+            if (delta.newPlanId >= 0L) repo.sessionDao.setPlanId(session.id, delta.newPlanId)
+            repo.sessionDao.setAsked(session.id, delta.newAskedRef)
+            repo.sessionDao.bumpTurn(session.id)
             if (reply.title.isNotBlank() && !fresh.titleLocked && !fresh.isHome) {
-                updated = updated.copy(title = reply.title, titleLocked = true)
+                repo.sessionDao.rename(session.id, reply.title, true)
             }
-            repo.sessionDao.update(updated)
         }
 
         if (visibleSession.value != session.id) postNotification(session.id, alert = true)
@@ -445,6 +455,7 @@ class Brain(
             val lastUserAt = repo.messageDao.lastUserAt() ?: 0L
             if (now - lastUserAt < 3 * 60_000L) return "active"
             if (typingState.value.isNotEmpty()) return "busy"
+            if (runtime.aftercareActive(now) && now - runtime.lastPingAt < AFTERCARE_PING_GAP) return "aftercare_hold"
         }
 
         val session = targetSession()
@@ -452,7 +463,7 @@ class Brain(
         return sessionLock.withLock {
             val freshSession = repo.sessionDao.get(session.id) ?: session
             val unanswered = repo.pingDao.unansweredSince(now - 36 * Srs.HOUR)
-            val plan = planner.plan(freshSession, s, now, rnd, forcedKind)
+            val plan = planner.plan(freshSession, s, now, rnd, forcedKind, aftercare = runtime.aftercareActive(now))
 
             var texts: List<String> = emptyList()
             var quick: List<String> = emptyList()
@@ -467,7 +478,7 @@ class Brain(
 
             if (settings.apiKey().isNotBlank() && online()) {
                 val built = builder.ping(freshSession, plan, now)
-                val result = call(built, Protocol.chatSchema, 2500, 1)
+                val result = call(built, Protocol.chatSchema, TOKENS_PING, 1)
                 if (result is GeminiClient.Result.Ok) {
                     val reply = Protocol.parse(result.text)
                     if (reply != null) {
@@ -482,6 +493,12 @@ class Brain(
                 } else if (result is GeminiClient.Result.Fail) {
                     runtime.lastError = Timex.hhmm(now) + " · пинг · " + result.kind.name + " · " + result.message.take(200)
                 }
+            }
+
+            if (texts.isEmpty() && plan.kind == PingPlanner.SAFE_CHECKIN) {
+                source = "offline"
+                texts = listOf(SafetyGuard.aftercareCheckIn(repo.profile().name))
+                quick = SafetyGuard.aftercareQuickReplies()
             }
 
             if (texts.isEmpty()) {
@@ -521,7 +538,8 @@ class Brain(
             val delta = memory.apply(
                 freshSession.copy(askedRef = ""),
                 Reply(messages = texts, quick = quick, mood = mood, emotion = emotion, asked = asked, anchors = anchors),
-                now
+                now,
+                gentle = plan.gentleOnly
             )
             val finalAsked = delta.newAskedRef.ifEmpty { if (source == "offline") asked else plan.askedRef }
             val visible = visibleSession.value == freshSession.id
@@ -563,6 +581,10 @@ class Brain(
         val unanswered = repo.pingDao.unansweredSince(now - 36 * Srs.HOUR)
         var at = PingScheduler.next(now, s, unanswered, rnd)
         if (runtime.snoozeUntil > at) at = runtime.snoozeUntil + rnd.nextInt(1, 6) * 60_000L
+        if (runtime.aftercareActive(now)) {
+            at = maxOf(at, runtime.lastPingAt + AFTERCARE_PING_GAP + rnd.nextInt(1, 15) * 60_000L)
+            if (PingScheduler.inQuiet(Timex.minuteOfDay(at), s)) at = PingScheduler.endOfQuiet(at, s) + rnd.nextInt(5, 30) * 60_000L
+        }
         if (repo.pingDao.countSince(Timex.startOfDay(now)) >= s.dailyPingCap) {
             at = maxOf(at, nextMorning(now) + rnd.nextInt(2, 25) * 60_000L)
         }
@@ -629,7 +651,7 @@ class Brain(
             attachment = attachment,
             webEnabled = settings.value.webSearchEnabled
         )
-        val result = call(built, Protocol.sourceExtractSchema, 6000, 1, "medium", useDeepModel = true)
+        val result = call(built, Protocol.sourceExtractSchema, TOKENS_LONG, 1)
         if (result is GeminiClient.Result.Fail) return Result.failure(IllegalStateException(result.human()))
         val ok = result as GeminiClient.Result.Ok
         val note = Protocol.parseExtractedSource(ok.text)
@@ -682,7 +704,7 @@ class Brain(
             confidencePct = confidencePct,
             webSearch = settings.value.webSearchEnabled
         )
-        val result = call(built, Protocol.decisionAssistSchema, 2500, 1, "medium", useDeepModel = true)
+        val result = call(built, Protocol.decisionAssistSchema, TOKENS_MID, 1)
         if (result is GeminiClient.Result.Fail) return Result.failure(IllegalStateException(result.human()))
         val ok = result as GeminiClient.Result.Ok
         val note = Protocol.parseDecisionAssist(ok.text)
@@ -693,7 +715,7 @@ class Brain(
     suspend fun generateCalibrationQuiz(topicHint: String): Result<CalibrationQuiz> {
         if (settings.apiKey().isBlank()) return Result.failure(IllegalStateException("Нужен API-ключ Gemini"))
         val built = builder.calibrationQuiz(topicHint, settings.value.webSearchEnabled)
-        val result = call(built, Protocol.calibrationQuizSchema, 1500, 1, "low", useDeepModel = false)
+        val result = call(built, Protocol.calibrationQuizSchema, TOKENS_SHORT, 1)
         if (result is GeminiClient.Result.Fail) return Result.failure(IllegalStateException(result.human()))
         val o = Protocol.extractObject((result as GeminiClient.Result.Ok).text)
             ?: return Result.failure(IllegalStateException("Неверный формат вопроса"))
@@ -726,7 +748,7 @@ class Brain(
             if (!force && userCount < 5) return false
 
             val built = builder.weeklyReview(now)
-            val result = call(built, Protocol.weeklyReviewSchema, 2500, 1, "medium", useDeepModel = true)
+            val result = call(built, Protocol.weeklyReviewSchema, TOKENS_MID, 1)
             if (result !is GeminiClient.Result.Ok) return false
             val note = Protocol.parseWeeklyReview(result.text) ?: return false
 
@@ -775,7 +797,7 @@ class Brain(
             if (userCount == 0) return false
 
             val built = builder.reflection(now)
-            val result = call(built, Protocol.reflectionSchema, 1800, 1, "low", useDeepModel = false)
+            val result = call(built, Protocol.reflectionSchema, TOKENS_MID, 1)
             if (result !is GeminiClient.Result.Ok) return false
             val obj = Protocol.extractObject(result.text) ?: return false
             val note = obj.str("note").trim()
@@ -808,7 +830,7 @@ class Brain(
             val chunk = repo.messageDao.after(sessionId, session.summarizedUpToId, 24)
             if (chunk.size < 12) return
             val built = builder.summary(session.summary, chunk, Timex.now())
-            val result = call(built, Protocol.summarySchema, 1200, 1, "minimal", useDeepModel = false)
+            val result = call(built, Protocol.summarySchema, TOKENS_SHORT, 1)
             if (result !is GeminiClient.Result.Ok) return
             val summary = Protocol.extractObject(result.text)?.str("summary")?.trim().orEmpty()
             if (summary.length < 20) return
@@ -822,19 +844,27 @@ class Brain(
 
     // ───────────────────────── Служебное ─────────────────────────
 
-    suspend fun testKey(key: String, model: String): GeminiClient.Result = gemini.generate(
+    suspend fun testKey(key: String): GeminiClient.Result = gemini.generate(
         key,
-        model,
         GeminiClient.Request(
             system = "",
             parts = listOf(GeminiClient.Part.Text("Ответь только одним словом: OK")),
             schema = null,
             jsonMode = false,
-            maxTokens = 256,
-            thinking = "auto",
+            maxTokens = TOKENS_SHORT,
             retries = 0
         )
     )
 
-    fun effectiveModel(): String = gemini.effectiveModel(settings.value.model)
+    private companion object {
+        /** Лимиты вывода с запасом: токены раздумий тоже входят в вывод модели. */
+        const val TOKENS_CHAT = 8192
+        const val TOKENS_PING = 4096
+        const val TOKENS_LONG = 12_288
+        const val TOKENS_MID = 4096
+        const val TOKENS_SHORT = 2048
+
+        /** Минимальный интервал между СМС в режиме «после кризиса». */
+        const val AFTERCARE_PING_GAP = 3 * 60 * 60_000L
+    }
 }
