@@ -108,7 +108,6 @@ fun SettingsScreen(main: MainViewModel, onBack: () -> Unit) {
         }
     }
 
-    // Статусы разрешений перечитываем при каждом возвращении на экран.
     var refresh by remember { mutableIntStateOf(0) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -135,7 +134,7 @@ fun SettingsScreen(main: MainViewModel, onBack: () -> Unit) {
                 .navigationBarsPadding()
                 .padding(horizontal = 12.dp, vertical = 4.dp)
         ) {
-            // ───────── Gemini ─────────
+            // ───────── Gemini API ─────────
             SectionTitle("Gemini API")
             Panel {
                 OutlinedTextField(
@@ -197,9 +196,9 @@ fun SettingsScreen(main: MainViewModel, onBack: () -> Unit) {
                     )
                 }
                 Spacer(Modifier.height(12.dp))
-                Text("Глубина размышлений модели", color = Fx.Text, style = MaterialTheme.typography.bodyLarge)
+                Text("Глубина анализа модели", color = Fx.Text, style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    "Выше — точнее разбор ошибок, но медленнее и дороже. «Низк.» — хороший баланс.",
+                    "Выше — глубже психологический разбор, но чуть дольше ответ. «Низк.» — быстрый и точный баланс.",
                     color = Fx.TextDim, style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(6.dp))
@@ -207,8 +206,8 @@ fun SettingsScreen(main: MainViewModel, onBack: () -> Unit) {
                     main.update { it.copy(thinking = THINKING[i]) }
                 })
                 Toggle(
-                    "Весь справочник в каждом ответе",
-                    "Friedrich сверяется со всеми таблицами A0–A1 (точнее, но ~25 тыс. токенов на запрос). Выключи для экономии — будут подгружаться только нужные темы.",
+                    "Весь атлас практик в каждом запросе",
+                    "Атлас держит в памяти все 30 методологических протоколов сразу (точнее, но выше расход токенов). Выключи для экономии — будут подаваться только нужные.",
                     s.fullReference
                 ) { v -> main.update { it.copy(fullReference = v) } }
                 if (main.runtime.lastError.isNotBlank()) {
@@ -217,51 +216,43 @@ fun SettingsScreen(main: MainViewModel, onBack: () -> Unit) {
                 }
             }
 
-            // ───────── Характер ─────────
-            SectionTitle("Как общается Friedrich")
+            // ───────── Характер Атласа ─────────
+            SectionTitle("Характер и напор Атласа")
             Panel {
-                Toggle(
-                    "Доля русского — автоматически",
-                    "Чем выше твой уровень, тем больше немецкого",
-                    s.russianShare < 0
-                ) { v -> main.update { it.copy(russianShare = if (v) -1 else 50) } }
-                if (s.russianShare >= 0) {
-                    Text("Русского ≈ ${s.russianShare}%", color = Fx.TextDim, style = MaterialTheme.typography.bodySmall)
-                    GoldSlider(s.russianShare / 100f, 0f..1f, 9) { v ->
-                        main.update { it.copy(russianShare = (v * 10).roundToInt() * 10) }
-                    }
-                }
+                Text("Режим давления", color = Fx.Text, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "В острой панике, кризисе или глубокой ночью Атлас всегда сам снижает давление независимо от этой настройки.",
+                    color = Fx.TextDim, style = MaterialTheme.typography.bodySmall
+                )
                 Spacer(Modifier.height(6.dp))
-                Text("Исправление ошибок", color = Fx.Text, style = MaterialTheme.typography.bodyLarge)
-                Spacer(Modifier.height(6.dp))
-                Segments(listOf("Мягко", "Обычно", "Строго"), s.strictness.coerceIn(0, 2), { i ->
-                    main.update { it.copy(strictness = i) }
+                Segments(listOf("Бережно", "Баланс", "Напористо ⚡"), s.pushiness.coerceIn(0, 2), { i ->
+                    main.update { it.copy(pushiness = i) }
                 })
-                Toggle("Обращение на «Вы» (Sie)", "По умолчанию Friedrich на «ты»", profile?.formal == true) { v ->
+                Toggle("Обращение на «Вы»", "По умолчанию Атлас общается на «ты»", profile?.formal == true) { v ->
                     main.saveProfile(name, goal, interests, about, v)
                 }
-                Toggle("Живые паузы", "Сообщения приходят по одному, как от человека", s.humanPacing) { v ->
+                Toggle("Живые паузы", "Сообщения приходят по очереди, как в переписке с живым человеком", s.humanPacing) { v ->
                     main.update { it.copy(humanPacing = v) }
                 }
             }
 
-            // ───────── Профиль ─────────
-            SectionTitle("О тебе")
+            // ───────── О тебе ─────────
+            SectionTitle("Твой профиль")
             Panel {
                 Field("Имя", name) { name = it }
-                Field("Цель (зачем немецкий)", goal) { goal = it }
-                Field("Интересы", interests) { interests = it }
-                Field("Что ещё важно знать Фридриху", about, lines = 3) { about = it }
+                Field("Главная цель или точка выхода", goal) { goal = it }
+                Field("Ценности и что заряжает", interests) { interests = it }
+                Field("Контекст жизни и главные триггеры", about, lines = 3) { about = it }
                 Spacer(Modifier.height(8.dp))
                 Chip("Сохранить", onClick = {
                     main.saveProfile(name, goal, interests, about, profile?.formal == true)
                 }, accent = true)
             }
 
-            // ───────── СМС ─────────
-            SectionTitle("СМС от Фридриха")
+            // ───────── Проактивные СМС ─────────
+            SectionTitle("СМС от Атласа")
             Panel {
-                Toggle("Friedrich пишет первым", "Случайные задания в течение дня", s.pingsEnabled) { v ->
+                Toggle("Атлас пишет первым", "Заряды дня, дожим шагов, якоря силы и вечерние итоги", s.pingsEnabled) { v ->
                     main.updatePings { it.copy(pingsEnabled = v) }
                 }
                 val lv = PingScheduler.level(s.pingIntensity)
@@ -290,37 +281,37 @@ fun SettingsScreen(main: MainViewModel, onBack: () -> Unit) {
                     }
                 }
                 Spacer(Modifier.height(10.dp))
-                Text("Не беспокоить", color = Fx.Text, style = MaterialTheme.typography.bodyLarge)
+                Text("Тихие часы (ночной режим)", color = Fx.Text, style = MaterialTheme.typography.bodyLarge)
                 Stepper("с", s.quietStartMin) { v -> main.updatePings { it.copy(quietStartMin = v) } }
                 Stepper("до", s.quietEndMin) { v -> main.updatePings { it.copy(quietEndMin = v) } }
                 Text(
-                    if (s.quietStartMin == s.quietEndMin) "Тихих часов нет: Friedrich пишет круглосуточно"
-                    else "В это время Friedrich молчит, а утром напишет первым",
+                    if (s.quietStartMin == s.quietEndMin) "Тихих часов нет: ночью будут приходить только спокойные анти-тревожные практики"
+                    else "В эти часы Атлас не шумит, а утром выходит на связь первым",
                     color = Fx.TextDim, style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(10.dp))
-                Text("Максимум сообщений в день: ${s.dailyPingCap}", color = Fx.Text, style = MaterialTheme.typography.bodyLarge)
+                Text("Максимум СМС в день: ${s.dailyPingCap}", color = Fx.Text, style = MaterialTheme.typography.bodyLarge)
                 GoldSlider(s.dailyPingCap.toFloat(), 5f..150f, 28) { v ->
                     main.updatePings { it.copy(dailyPingCap = (v / 5f).roundToInt() * 5) }
                 }
                 val target = sessions.firstOrNull { it.id == s.pingSessionId }
                 SettingRow(
-                    "Куда приходят смс",
+                    "Куда приходят СМС",
                     (target?.title ?: "Главный чат") + " — изменить можно долгим нажатием на чат в списке"
                 )
             }
 
-            // ───────── Фон ─────────
-            SectionTitle("Работа в фоне («всегда включён»)")
+            // ───────── Работа в фоне ─────────
+            SectionTitle("Работа в фоне («всегда на связи»)")
             Panel {
                 Toggle(
                     "Постоянный сервис",
-                    "Тихое уведомление «Friedrich на связи» не даёт системе выгрузить приложение",
+                    "Тихое уведомление «Атлас на связи» не даёт системе выгрузить процесс",
                     s.keepAlive
                 ) { v -> main.setKeepAlive(v) }
                 StatusRow(
                     "Уведомления", notificationsOn,
-                    if (notificationsOn) "разрешены" else "запрещены — Friedrich не сможет писать"
+                    if (notificationsOn) "разрешены" else "запрещены — Атлас не сможет писать"
                 ) {
                     if (Build.VERSION.SDK_INT >= 33 &&
                         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -332,20 +323,20 @@ fun SettingsScreen(main: MainViewModel, onBack: () -> Unit) {
                 }
                 StatusRow(
                     "Экономия батареи", batteryFree,
-                    if (batteryFree) "отключена для Фридриха — отлично" else "включена — система может задерживать сообщения"
+                    if (batteryFree) "отключена — отлично" else "включена — система может задерживать сообщения"
                 ) { requestIgnoreBattery(context) }
                 Text(
-                    "На Xiaomi, Huawei, Honor, Oppo, Vivo, Samsung дополнительно включи для приложения «Автозапуск» и «Без ограничений» в настройках батареи — иначе прошивка может усыплять приложение.",
+                    "На Xiaomi, Huawei, Honor, Oppo, Vivo, Samsung дополнительно включи «Автозапуск» и «Без ограничений» в настройках батареи.",
                     color = Fx.TextDim, style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(8.dp))
                 Chip("Открыть настройки приложения", onClick = { openAppSettings(context) })
             }
 
-            // ───────── Звук и вид ─────────
+            // ───────── Звук и интерфейс ─────────
             SectionTitle("Озвучка и текст")
             Panel {
-                Toggle("Озвучка немецкого", "Долгое нажатие на сообщение → «Озвучить»", s.ttsEnabled) { v ->
+                Toggle("Голосовое чтение практик", "Долгое нажатие на сообщение → «Озвучить вслух»", s.ttsEnabled) { v ->
                     main.update { it.copy(ttsEnabled = v) }
                 }
                 Text("Скорость речи: ×" + "%.1f".format(s.ttsRate), color = Fx.TextDim, style = MaterialTheme.typography.bodySmall)
@@ -357,15 +348,15 @@ fun SettingsScreen(main: MainViewModel, onBack: () -> Unit) {
             // ───────── Данные ─────────
             SectionTitle("Данные")
             Panel {
-                SettingRow("Экспорт всех данных", "Досье, словарь и переписка одним JSON-файлом", onClick = { main.exportAll(context) })
+                SettingRow("Экспорт всех данных", "Досье, якоря, ловушки, планы и переписка одним JSON-файлом", onClick = { main.exportAll(context) })
                 SettingRow(
-                    "Сбросить всё", "Удалить переписку, досье и настройки (ключ останется)",
+                    "Сбросить всё", "Удалить переписку, досье и настройки (API-ключ сохранится)",
                     onClick = { wipeConfirm = true }
                 )
             }
             Spacer(Modifier.height(12.dp))
             Text(
-                "Friedrich 1.0 · Gemini API · данные хранятся только на этом устройстве",
+                "Атлас 1.0 · Gemini 3.1 Flash-Lite · все данные хранятся только на этом устройстве",
                 color = Fx.TextFaint, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(4.dp)
             )
             Spacer(Modifier.height(32.dp))
@@ -375,7 +366,7 @@ fun SettingsScreen(main: MainViewModel, onBack: () -> Unit) {
     if (wipeConfirm) {
         ConfirmDialog(
             title = "Сбросить всё?",
-            text = "Переписка, словарь, ошибки, прогресс и настройки будут удалены без возможности восстановления.",
+            text = "Переписка, якоря, ловушки, планы и настройки будут удалены без возможности восстановления.",
             confirm = "Сбросить", danger = true,
             onConfirm = { main.wipeAll() },
             onDismiss = { wipeConfirm = false }
@@ -428,7 +419,6 @@ private fun Field(label: String, value: String, lines: Int = 1, onChange: (Strin
     )
 }
 
-/** Выбор времени шагом 30 минут. */
 @Composable
 private fun Stepper(label: String, minutes: Int, onChange: (Int) -> Unit) {
     Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -460,8 +450,6 @@ private fun StatusRow(title: String, ok: Boolean, text: String, onFix: () -> Uni
         if (!ok) Chip("Исправить", onClick = onFix, accent = true)
     }
 }
-
-// ───────────────────────── Системные переходы ─────────────────────────
 
 fun isIgnoringBattery(context: Context): Boolean = try {
     val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
