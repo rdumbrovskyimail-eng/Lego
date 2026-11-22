@@ -20,9 +20,10 @@ import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
 import com.legode.friedrich.MainActivity
 import com.legode.friedrich.R
+import com.legode.friedrich.brain.Persona
 import com.legode.friedrich.core.Logx
 
-/** Уведомления: «смс» от Фридриха в стиле мессенджера (с ответом прямо из шторки) и служебное уведомление сервиса. */
+/** Уведомления: проактивные СМС от Атласа (с ответом прямо из шторки) и служебное уведомление сервиса. */
 class Notifier(private val context: Context) {
 
     data class Line(val text: String, val fromUser: Boolean, val at: Long)
@@ -32,10 +33,10 @@ class Notifier(private val context: Context) {
 
     private val avatar: Bitmap by lazy { drawAvatar() }
 
-    private val friedrich: Person by lazy {
+    private val atlas: Person by lazy {
         Person.Builder()
-            .setName("Friedrich")
-            .setKey("friedrich")
+            .setName(Persona.NAME)
+            .setKey("atlas")
             .setImportant(true)
             .setIcon(IconCompat.createWithBitmap(avatar))
             .build()
@@ -93,12 +94,12 @@ class Notifier(private val context: Context) {
             val id = chatId(sessionId)
 
             val style = NotificationCompat.MessagingStyle(me)
-            if (title != "Friedrich") {
+            if (title != Persona.NAME) {
                 style.conversationTitle = title
                 style.isGroupConversation = false
             }
             for (l in lines) {
-                style.addMessage(l.text, l.at, if (l.fromUser) null else friedrich)
+                style.addMessage(l.text, l.at, if (l.fromUser) null else atlas)
             }
 
             val mutable = if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
@@ -107,7 +108,7 @@ class Notifier(private val context: Context) {
                 Intent(context, ReplyReceiver::class.java).setAction(ACTION_REPLY).putExtra(EXTRA_SESSION, sessionId),
                 PendingIntent.FLAG_UPDATE_CURRENT or mutable
             )
-            val remoteInput = RemoteInput.Builder(KEY_REPLY).setLabel("Antworten… / Ответить").build()
+            val remoteInput = RemoteInput.Builder(KEY_REPLY).setLabel("Ответить Атласу…").build()
             val reply = NotificationCompat.Action.Builder(R.drawable.ic_stat_friedrich, "Ответить", replyPi)
                 .addRemoteInput(remoteInput)
                 .setAllowGeneratedReplies(false)
@@ -145,7 +146,7 @@ class Notifier(private val context: Context) {
                 .setShowWhen(true)
                 .setOnlyAlertOnce(!alert)
                 .setShortcutId(SHORTCUT_ID)
-                .addPerson(friedrich)
+                .addPerson(atlas)
                 .addAction(reply)
                 .addAction(R.drawable.ic_stat_friedrich, "Отложить на час", snoozePi)
                 .addAction(R.drawable.ic_stat_friedrich, "Прочитано", readPi)
@@ -176,13 +177,13 @@ class Notifier(private val context: Context) {
         }
     }
 
-    /** Тихое постоянное уведомление сервиса «Friedrich на связи». */
+    /** Тихое постоянное уведомление сервиса «Атлас на связи». */
     fun buildService(text: String): Notification {
         ensureChannels()
         return NotificationCompat.Builder(context, CH_SERVICE)
             .setSmallIcon(R.drawable.ic_stat_friedrich)
             .setColor(ACCENT)
-            .setContentTitle("Friedrich на связи")
+            .setContentTitle("Атлас на связи")
             .setContentText(text)
             .setOngoing(true)
             .setSilent(true)
@@ -206,10 +207,10 @@ class Notifier(private val context: Context) {
     private fun pushShortcut() {
         try {
             val shortcut = ShortcutInfoCompat.Builder(context, SHORTCUT_ID)
-                .setShortLabel("Friedrich")
-                .setLongLabel("Чат с Фридрихом")
+                .setShortLabel(Persona.NAME)
+                .setLongLabel("Чат с Атласом")
                 .setLongLived(true)
-                .setPerson(friedrich)
+                .setPerson(atlas)
                 .setIcon(IconCompat.createWithBitmap(avatar))
                 .setIntent(Intent(context, MainActivity::class.java).setAction(Intent.ACTION_VIEW))
                 .build()
@@ -227,20 +228,20 @@ class Notifier(private val context: Context) {
         paint.color = ACCENT
         canvas.drawCircle(size / 2f, size / 2f, size / 2f, paint)
         paint.color = 0xFF0B0D12.toInt()
-        paint.textSize = size * 0.58f
+        paint.textSize = size * 0.56f
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         paint.textAlign = Paint.Align.CENTER
         val y = size / 2f - (paint.descent() + paint.ascent()) / 2f
-        canvas.drawText("F", size / 2f, y, paint)
+        canvas.drawText("А", size / 2f, y, paint)
         return bmp
     }
 
     companion object {
-        const val CH_CHAT = "friedrich_chat_v1"
-        const val CH_SERVICE = "friedrich_service_v1"
+        const val CH_CHAT = "atlas_chat_v1"
+        const val CH_SERVICE = "atlas_service_v1"
         const val SERVICE_ID = 77
         const val WORK_ID = 78
-        const val SHORTCUT_ID = "friedrich_chat"
+        const val SHORTCUT_ID = "atlas_chat"
         const val KEY_REPLY = "key_reply_text"
         const val EXTRA_SESSION = "session_id"
         const val ACTION_OPEN_CHAT = "com.legode.friedrich.OPEN_CHAT"
