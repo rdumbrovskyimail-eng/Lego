@@ -13,10 +13,14 @@ import androidx.lifecycle.viewModelScope
 import com.legode.friedrich.audio.Speaker
 import com.legode.friedrich.brain.Brain
 import com.legode.friedrich.brain.Curriculum
+import com.legode.friedrich.brain.DecisionAssistNote
+import com.legode.friedrich.brain.Fsrs
 import com.legode.friedrich.brain.GeminiClient
 import com.legode.friedrich.brain.KnowledgeBase
 import com.legode.friedrich.brain.Skills
+import com.legode.friedrich.brain.Srs
 import com.legode.friedrich.core.Timex
+import com.legode.friedrich.data.Attachment
 import com.legode.friedrich.data.AttachmentStore
 import com.legode.friedrich.data.Repository
 import com.legode.friedrich.data.RuntimeState
@@ -25,27 +29,44 @@ import com.legode.friedrich.data.SettingsStore
 import com.legode.friedrich.data.db.ActionPlanEntity
 import com.legode.friedrich.data.db.AnchorEntity
 import com.legode.friedrich.data.db.DailyEntity
+import com.legode.friedrich.data.db.DecisionEntity
 import com.legode.friedrich.data.db.FactEntity
+import com.legode.friedrich.data.db.FocusSessionEntity
 import com.legode.friedrich.data.db.JournalEntity
+import com.legode.friedrich.data.db.KnowledgeCardEntity
+import com.legode.friedrich.data.db.MessageEntity
 import com.legode.friedrich.data.db.PlanProgress
+import com.legode.friedrich.data.db.PredictionEntity
 import com.legode.friedrich.data.db.ProfileEntity
 import com.legode.friedrich.data.db.SessionEntity
 import com.legode.friedrich.data.db.SkillProgressEntity
+import com.legode.friedrich.data.db.SourceEntity
 import com.legode.friedrich.data.db.TrapEntity
+import com.legode.friedrich.data.db.WeeklyReviewEntity
 import com.legode.friedrich.notify.Jobs
 import com.legode.friedrich.notify.KeepAliveService
 import com.legode.friedrich.notify.Notifier
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
+
+enum class RootTab(val label: String) {
+    CHATS("Диалоги"),
+    TRAINER("Тренажёр"),
+    DECISIONS("Решения"),
+    LIBRARY("База"),
+    DOSSIER("Досье")
+}
 
 sealed class Screen {
     object Sessions : Screen()
@@ -55,9 +76,9 @@ sealed class Screen {
     object Settings : Screen()
 }
 
-/** Текст или файлы, которыми поделились с приложением извне. */
 data class SharedPayload(val text: String, val uris: List<Uri>)
 
+@OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class MainViewModel @Inject constructor(
     @ApplicationContext private val app: Context,
@@ -74,11 +95,27 @@ class MainViewModel @Inject constructor(
     // ───────────────────────── Навигация ─────────────────────────
 
     val stack = mutableStateListOf<Screen>(Screen.Sessions)
-
-    /** Текст или файлы из системного «Поделиться» — забирает экран чата. */
+    var rootTab by mutableStateOf(RootTab.CHATS)
+        private set
     var shared by mutableStateOf<SharedPayload?>(null)
 
+    fun selectTab(tab: RootTab) {
+        rootTab = tab
+        while (stack.size > 1) stack.removeAt(stack.lastIndex)
+    }
+
     fun open(screen: Screen) {
+        when (screen) {
+            is Screen.Dossier -> {
+                selectTab(RootTab.DOSSIER)
+                return
+            }
+            is Screen.Reference -> if (screen.topicId == null) {
+                selectTab(RootTab.LIBRARY)
+                return
+            }
+            else -> Unit
+        }
         if (stack.lastOrNull() == screen) return
         if (screen is Screen.Chat) {
             while (stack.size > 1) stack.removeAt(stack.lastIndex)
@@ -87,9 +124,15 @@ class MainViewModel @Inject constructor(
     }
 
     fun back(): Boolean {
-        if (stack.size <= 1) return false
-        stack.removeAt(stack.lastIndex)
-        return true
+        if (stack.size > 1) {
+            stack.removeAt(stack.lastIndex)
+            return true
+        }
+        if (rootTab != RootTab.CHATS) {
+            rootTab = RootTab.CHATS
+            return true
+        }
+        return false
     }
 
     fun openChat(sessionId: Long) = open(Screen.Chat(sessionId))
@@ -98,7 +141,6 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch { openChat(repo.ensureHome().id) }
     }
 
-    /** Переход из уведомления: sessionId = 0 означает «главный чат». */
     fun openFromNotification(sessionId: Long) {
         viewModelScope.launch {
             val id = if (sessionId != 0L && repo.sessionDao.get(sessionId) != null) sessionId else repo.ensureHome().id
@@ -131,10 +173,35 @@ class MainViewModel @Inject constructor(
     val pingCount: StateFlow<Int> = repo.pingDao.observeCount().state(0)
     val pingAnswered: StateFlow<Int> = repo.pingDao.observeAnswered().state(0)
     val nextPing: StateFlow<Long> = runtime.nextPingFlow
+    val speaking: StateFlow<Boolean> = speaker.speaking
 
-    // ───────────────────────── Запуск и знакомство ─────────────────────────
+    val sources: StateFlow<List<SourceEntity>> = repo.sourceDao.observeAll().state(emptyList())
+    val knowledgeCards: StateFlow<List<KnowledgeCardEntity>> = repo.knowledgeCardDao.observeAllActive().state(emptyList())
+    val decisions: StateFlow<List<DecisionEntity>> = repo.decisionDao.observeAll().state(emptyList())
+    val predictions: StateFlow<List<PredictionEntity>> = repo.predictionDao.observeAll().state(emptyList())
+    val focusSessions: StateFlow<List<FocusSessionEntity>> = repo.focusSessionDao.observeRecent().state(emptyList())
+    val weeklyReviews: StateFlow<List<WeeklyReviewEntity>> = repo.weeklyReviewDao.observeAll().state(emptyList())
+    val starredMessages: StateFlow<List<MessageEntity>> = repo.messageDao.observeStarred().state(emptyList())
 
-    /** Вызывается каждый раз, когда приложение выходит на передний план. */
+    val activityGrid: StateFlow<Array<IntArray>> = sessions.mapLatest {
+        val msgs = repo.messageDao.since(Timex.now() - 14 * Srs.DAY).filter { it.role == Repository.ROLE_USER }
+        val grid = Array(7) { IntArray(4) }
+        for (m in msgs) {
+            val d = Timex.dayOfWeekIndex(m.createdAt)
+            val h = Timex.hourOfDay(m.createdAt)
+            val p = when (h) {
+                in 5..11 -> 0
+                in 12..17 -> 1
+                in 18..22 -> 2
+                else -> 3
+            }
+            grid[d][p]++
+        }
+        grid
+    }.state(Array(7) { IntArray(4) })
+
+    // ───────────────────────── Жизненный цикл и онбординг ─────────────────────────
+
     fun onForeground() {
         viewModelScope.launch(Dispatchers.IO) { kb.ensureLoaded() }
         if (!settings.value.onboarded) return
@@ -165,6 +232,7 @@ class MainViewModel @Inject constructor(
             Jobs.watchdog(app)
             stack.clear()
             stack.add(Screen.Sessions)
+            rootTab = RootTab.CHATS
             stack.add(Screen.Chat(home.id))
             brain.requestKickoff(home.id)
             brain.rearm()
@@ -173,9 +241,51 @@ class MainViewModel @Inject constructor(
 
     // ───────────────────────── Сессии ─────────────────────────
 
-    fun newSession(mode: String, arg: String = "", planId: Long = 0L) {
+    fun newSession(mode: String, arg: String = "", planId: Long = 0L, sourceId: Long = 0L, decisionId: Long = 0L) {
         viewModelScope.launch {
-            val id = repo.createSession(mode, arg, Skills.defaultTitle(mode, arg), Skills.emoji(mode, arg), planId)
+            val socratic = settings.value.socraticByDefault || Skills.mode(mode).defaultSocratic
+            val id = repo.createSession(
+                mode = mode,
+                modeArg = arg,
+                title = Skills.defaultTitle(mode, arg),
+                emoji = Skills.emoji(mode, arg),
+                planId = planId,
+                socraticMode = socratic,
+                sourceId = sourceId,
+                decisionId = decisionId
+            )
+            openChat(id)
+            brain.requestKickoff(id)
+        }
+    }
+
+    fun openSourceChat(src: SourceEntity, teachMode: Boolean = false) {
+        viewModelScope.launch {
+            val mode = if (teachMode) Skills.TEACH else Skills.FREE
+            val prefix = if (teachMode) "Фейнман: " else "Разбор: "
+            val id = repo.createSession(
+                mode = mode,
+                modeArg = src.title,
+                title = (prefix + src.title).take(40),
+                emoji = if (teachMode) "🎓" else "📚",
+                socraticMode = teachMode,
+                sourceId = src.id
+            )
+            openChat(id)
+            brain.requestKickoff(id)
+        }
+    }
+
+    fun openDecisionChat(d: DecisionEntity) {
+        viewModelScope.launch {
+            val id = repo.createSession(
+                mode = Skills.STEELMAN,
+                modeArg = d.title,
+                title = ("Спарринг: " + d.title).take(40),
+                emoji = "⚖️",
+                socraticMode = true,
+                decisionId = d.id
+            )
             openChat(id)
             brain.requestKickoff(id)
         }
@@ -211,12 +321,198 @@ class MainViewModel @Inject constructor(
 
     fun pinSession(id: Long, pinned: Boolean) = viewModelScope.launch { repo.sessionDao.setPinned(id, pinned) }
 
-    // ───────────────────────── Досье ─────────────────────────
+    // ───────────────────────── Вторая память (Источники + Карточки FSRS) ─────────────────────────
+
+    var extractingSource by mutableStateOf(false)
+        private set
+
+    fun extractSourceText(titleHint: String, kind: String, contentOrUrl: String, onDone: (Result<Long>) -> Unit) {
+        if (extractingSource) return
+        extractingSource = true
+        viewModelScope.launch {
+            val res = brain.extractAndSaveSource(titleHint, kind, contentOrUrl, null)
+            extractingSource = false
+            onDone(res)
+        }
+    }
+
+    fun extractSourceFromUri(uri: Uri, titleHint: String, onDone: (Result<Long>) -> Unit) {
+        if (extractingSource) return
+        extractingSource = true
+        viewModelScope.launch {
+            when (val imp = attachments.importUri(uri)) {
+                is AttachmentStore.ImportResult.Rejected -> {
+                    extractingSource = false
+                    onDone(Result.failure(IllegalArgumentException(imp.reason)))
+                }
+                is AttachmentStore.ImportResult.Ok -> {
+                    val a = imp.attachment
+                    val kind = when {
+                        a.isPdf -> "pdf"
+                        a.isImage -> "image"
+                        a.isAudio -> "audio"
+                        else -> "text"
+                    }
+                    val res = brain.extractAndSaveSource(
+                        titleHint = titleHint.ifBlank { a.name.substringBeforeLast('.') },
+                        kind = kind,
+                        contentOrUrl = a.name,
+                        attachment = a
+                    )
+                    extractingSource = false
+                    onDone(res)
+                }
+            }
+        }
+    }
+
+    fun reviewCard(cardId: Long, rating: Fsrs.Rating) = viewModelScope.launch {
+        repo.reviewCardFsrs(cardId, rating)
+    }
+
+    fun reviewAnchor(anchorId: Long, rating: Fsrs.Rating) = viewModelScope.launch {
+        repo.reviewAnchorFsrs(anchorId, rating)
+    }
+
+    fun addManualCard(front: String, back: String, kind: String = "recall", skillId: String = "") = viewModelScope.launch {
+        if (front.isNotBlank() && back.isNotBlank()) {
+            repo.addStandaloneCard(Repository.CardDraft(kind = kind, front = front, back = back, skillId = skillId))
+        }
+    }
+
+    fun deleteCard(id: Long) = viewModelScope.launch { repo.knowledgeCardDao.delete(id) }
+
+    fun deleteSource(id: Long) = viewModelScope.launch { repo.deleteSource(id) }
+
+    // ───────────────────────── Решения, Прогнозы и Калибровка ─────────────────────────
+
+    var assistingDecision by mutableStateOf(false)
+        private set
+
+    fun assistDecision(
+        title: String,
+        contextText: String,
+        alternatives: List<String>,
+        chosenOption: String,
+        confidencePct: Int,
+        onDone: (Result<DecisionAssistNote>) -> Unit
+    ) {
+        if (assistingDecision) return
+        assistingDecision = true
+        viewModelScope.launch {
+            val res = brain.assistDecision(title, contextText, alternatives, chosenOption, confidencePct)
+            assistingDecision = false
+            onDone(res)
+        }
+    }
+
+    fun createDecision(
+        title: String,
+        contextText: String,
+        alternatives: List<String>,
+        chosenOption: String,
+        baseRateNote: String,
+        preMortem: String,
+        ifThenSafeguard: String,
+        confidencePct: Int,
+        reviewDays: Int
+    ) = viewModelScope.launch {
+        val did = repo.createDecision(
+            title, contextText, alternatives, chosenOption,
+            baseRateNote, preMortem, ifThenSafeguard, confidencePct, reviewDays
+        )
+        // Автоматически создаём связанный вероятностный прогноз для тренировки Brier Score!
+        if (reviewDays > 0) {
+            repo.createPrediction(
+                question = "Решение сработает успешно: $title",
+                probabilityPct = confidencePct,
+                category = "personal",
+                rationale = baseRateNote.ifBlank { preMortem },
+                checkAt = Timex.daysFromNow(reviewDays, 12),
+                decisionId = did
+            )
+        }
+    }
+
+    fun resolveDecision(id: Long, outcomeNote: String, processQuality: Int) = viewModelScope.launch {
+        repo.resolveDecision(id, outcomeNote, processQuality)
+    }
+
+    fun deleteDecision(id: Long) = viewModelScope.launch { repo.decisionDao.delete(id) }
+
+    fun createPrediction(question: String, pct: Int, daysUntilCheck: Int, rationale: String = "", category: String = "personal") =
+        viewModelScope.launch {
+            val checkAt = if (daysUntilCheck <= 0) Timex.now() else Timex.daysFromNow(daysUntilCheck, 12)
+            repo.createPrediction(question, pct, category, rationale, checkAt)
+        }
+
+    fun resolvePrediction(id: Long, outcome: Int) = viewModelScope.launch {
+        repo.resolvePrediction(id, outcome)
+    }
+
+    fun deletePrediction(id: Long) = viewModelScope.launch { repo.predictionDao.delete(id) }
+
+    var generatingQuiz by mutableStateOf(false)
+        private set
+
+    fun generateCalibrationQuiz(topicHint: String, onDone: (Result<Brain.CalibrationQuiz>) -> Unit) {
+        if (generatingQuiz) return
+        generatingQuiz = true
+        viewModelScope.launch {
+            val res = brain.generateCalibrationQuiz(topicHint)
+            generatingQuiz = false
+            onDone(res)
+        }
+    }
+
+    fun recordQuizResult(question: String, guessedPct: Int, actualOutcome: Int, explanation: String) =
+        viewModelScope.launch {
+            val now = Timex.now()
+            val id = repo.createPrediction(
+                question = question,
+                probabilityPct = guessedPct,
+                category = "calibration_quiz",
+                rationale = explanation,
+                checkAt = now,
+                now = now
+            )
+            repo.resolvePrediction(id, actualOutcome, now)
+        }
+
+    // ───────────────────────── Фокус, Соматика и Компас эмоций ─────────────────────────
+
+    fun logFocusSession(
+        kind: String,
+        goal: String,
+        obstacle: String,
+        ifThenPlan: String,
+        plannedMin: Int,
+        actualMin: Int,
+        completed: Boolean,
+        focusQuality: Int,
+        moodBefore: Int,
+        moodAfter: Int,
+        note: String
+    ) = viewModelScope.launch {
+        repo.logFocusSession(
+            kind, goal, obstacle, ifThenPlan, plannedMin, actualMin,
+            completed, focusQuality, moodBefore, moodAfter, note
+        )
+    }
+
+    fun logEmotionCheck(emotionLabel: String, moodScore: Int, note: String) = viewModelScope.launch {
+        val now = Timex.now()
+        repo.recordMood(moodScore, now)
+        val txt = if (note.isBlank()) "Эмоция: $emotionLabel ($moodScore/10)" else "Эмоция: $emotionLabel ($moodScore/10) — $note"
+        repo.addJournal("emotion", txt, now)
+        repo.addXp(3, now)
+        repo.registerActivity(now, 3)
+    }
+
+    // ───────────────────────── Досье, Избранное и Еженедельный синтез ─────────────────────────
 
     fun addAnchor(phrase: String, why: String, source: String = "Личный якорь", trigger: String = "") =
-        viewModelScope.launch {
-            repo.upsertAnchor(phrase, why, source, trigger, "user", Timex.now())
-        }
+        viewModelScope.launch { repo.upsertAnchor(phrase, why, source, trigger, "user", Timex.now()) }
 
     fun deleteAnchor(id: Long) = viewModelScope.launch { repo.anchorDao.delete(id) }
 
@@ -230,21 +526,27 @@ class MainViewModel @Inject constructor(
 
     fun deleteJournal(id: Long) = viewModelScope.launch { repo.journalDao.delete(id) }
 
+    fun deleteWeeklyReview(id: Long) = viewModelScope.launch { repo.weeklyReviewDao.delete(id) }
+
+    fun unstarMessage(id: Long) = viewModelScope.launch { repo.messageDao.setStar(id, false) }
+
     fun setMastery(skillId: String, value: Int) = viewModelScope.launch {
         repo.setMastery(skillId, value)
         repo.recomputeStage()
     }
 
-    /** План из текста: каждая строка — «шаг — зачем/условие» (разделители: —, -, =, ;, таб). */
     fun createPlanFromText(title: String, text: String) = viewModelScope.launch {
         val steps = text.lines().mapNotNull { raw ->
             val line = raw.trim().trimStart('•', '-', '*', ' ').trim()
             if (line.isEmpty()) return@mapNotNull null
             val parts = line.split(" — ", " – ", " - ", "\t", "=", ";", limit = 2)
-            parts[0].trim().take(220) to parts.getOrElse(1) { "" }.trim().take(220)
-        }.filter { it.first.isNotEmpty() }.take(100)
+            Repository.WoopStepInput(
+                step = parts[0].trim().take(220),
+                why = parts.getOrElse(1) { "" }.trim().take(220)
+            )
+        }.filter { it.step.isNotEmpty() }.take(100)
         if (steps.isNotEmpty()) {
-            repo.createPlan(title.ifBlank { "План прорыва" }.take(60), steps, 0L, Timex.now())
+            repo.createWoopPlan(title.ifBlank { "WOOP-план" }.take(60), "", "", "", steps, 0L, Timex.now())
         }
     }
 
@@ -265,6 +567,19 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    var generatingWeekly by mutableStateOf(false)
+        private set
+
+    fun generateWeeklyReviewNow(onDone: (Boolean) -> Unit) {
+        if (generatingWeekly) return
+        generatingWeekly = true
+        viewModelScope.launch {
+            val ok = brain.generateWeeklyReview(force = true)
+            generatingWeekly = false
+            onDone(ok)
+        }
+    }
+
     fun saveProfile(name: String, goal: String, interests: String, about: String, formal: Boolean) =
         viewModelScope.launch {
             repo.updateProfile {
@@ -272,11 +587,23 @@ class MainViewModel @Inject constructor(
             }
         }
 
+    fun stopSpeaking() = speaker.stop()
+
     // ───────────────────────── Настройки ─────────────────────────
 
-    fun update(block: (Settings) -> Settings) = settings.update(block)
+    fun update(block: (Settings) -> Settings) {
+        val next = block(settings.value)
+        settings.update { next }
+        viewModelScope.launch {
+            repo.updateProfile {
+                it.copy(
+                    desiredRetention = next.desiredRetention.toDouble(),
+                    socraticDefault = next.socraticByDefault
+                )
+            }
+        }
+    }
 
-    /** Изменение настроек «смс»: сразу пересчитываем расписание. */
     fun updatePings(block: (Settings) -> Settings) {
         settings.update(block)
         viewModelScope.launch { brain.rearm() }
@@ -300,7 +627,7 @@ class MainViewModel @Inject constructor(
         val clean = key.trim()
         settings.setApiKey(clean)
         if (clean.isEmpty()) {
-            keyCheck = "Ключ удалён. Атлас перейдёт на офлайн-банк практик и цитат."
+            keyCheck = "Ключ удалён. Атлас перешёл на офлайн-банк практик и цитат."
             onResult(false)
             return
         }
@@ -323,16 +650,15 @@ class MainViewModel @Inject constructor(
         }
     }
 
-    // ───────────────────────── Данные ─────────────────────────
+    // ───────────────────────── Экспорт, Импорт (Backup) и Сброс ─────────────────────────
 
-    /** Экспорт всего досье и переписки в JSON-файл через системное «Поделиться». */
     fun exportAll(context: Context) = viewModelScope.launch {
         try {
             val json = repo.exportAllJson()
             val uri = withContext(Dispatchers.IO) {
                 val dir = File(app.cacheDir, "shared")
                 dir.mkdirs()
-                val file = File(dir, "atlas-export-${Timex.today()}.json")
+                val file = File(dir, "atlas-backup-${Timex.today()}.json")
                 file.writeText(json, Charsets.UTF_8)
                 FileProvider.getUriForFile(app, app.packageName + ".files", file)
             }
@@ -340,8 +666,26 @@ class MainViewModel @Inject constructor(
                 .setType("application/json")
                 .putExtra(Intent.EXTRA_STREAM, uri)
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            context.startActivity(Intent.createChooser(send, "Экспорт данных Атласа"))
+            context.startActivity(Intent.createChooser(send, "Экспорт бэкапа Атласа"))
         } catch (_: Throwable) {
+        }
+    }
+
+    fun importBackupUri(uri: Uri, onDone: (Result<String>) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val json = withContext(Dispatchers.IO) {
+                    app.contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+                }
+                if (json.isBlank()) {
+                    onDone(Result.failure(IllegalArgumentException("Файл бэкапа пустой")))
+                    return@launch
+                }
+                val summary = repo.importBackupJson(json)
+                onDone(Result.success("Восстановлено: ${summary.describe()}"))
+            } catch (t: Throwable) {
+                onDone(Result.failure(IllegalArgumentException("Не удалось прочитать бэкап: ${t.message}")))
+            }
         }
     }
 
@@ -354,6 +698,7 @@ class MainViewModel @Inject constructor(
         settings.setApiKey(key)
         KeepAliveService.stop(app)
         brain.rearm()
+        rootTab = RootTab.CHATS
         stack.clear()
         stack.add(Screen.Sessions)
     }
