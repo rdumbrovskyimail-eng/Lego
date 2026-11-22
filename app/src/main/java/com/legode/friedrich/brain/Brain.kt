@@ -6,14 +6,17 @@ import android.net.NetworkCapabilities
 import com.legode.friedrich.core.Logx
 import com.legode.friedrich.core.Timex
 import com.legode.friedrich.core.arr
+import com.legode.friedrich.core.int
 import com.legode.friedrich.core.str
 import com.legode.friedrich.core.strings
 import com.legode.friedrich.data.Attachment
 import com.legode.friedrich.data.AttachmentStore
 import com.legode.friedrich.data.Repository
 import com.legode.friedrich.data.RuntimeState
+import com.legode.friedrich.data.Settings
 import com.legode.friedrich.data.SettingsStore
 import com.legode.friedrich.data.db.SessionEntity
+import com.legode.friedrich.data.db.WeeklyReviewEntity
 import com.legode.friedrich.notify.AlarmScheduler
 import com.legode.friedrich.notify.Notifier
 import kotlinx.coroutines.CoroutineScope
@@ -30,12 +33,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 
 /**
- * Мозг Атласа — оркестратор психо-эмоционального движка:
- *  • respond()    — мгновенный перехват CRISIS через SafetyGuard, либо контекстный ответ на базе RAG и Gemini;
- *  • kickoff()    — Атлас начинает беседу первым (или даёт сильный офлайн-старт);
- *  • pingCycle()  — проактивное СМС по расписанию (Gemini, а без сети — умный офлайн-банк из KnowledgeBase);
- *  • reflect()    — периодический психологический разбор динамики и обновление тактики в досье;
- *  • summarize()  — сжатие длинных бесед без потери смысла.
+ * Мозг Атласа — оркестратор психо-когнитивного движка:
+ *  • respond()              — SafetyGuard + SSE-стриминг (с фолбэком) + RAG + память;
+ *  • kickoff()              — старт новой беседы или арены;
+ *  • pingCycle()            — JITAI-пинг без гонок с чатом и двойных срабатываний;
+ *  • extractAndSaveSource() — разбор книги/PDF/URL в выжимку и карточки FSRS;
+ *  • assistDecision()       — аудит решения (Outside View + Pre-mortem + WOOP);
+ *  • generateWeeklyReview() — Воскресный Executive Review + 6-осевой радар.
  */
 class Brain(
     private val context: Context,
@@ -49,6 +53,8 @@ class Brain(
     private val alarms: AlarmScheduler,
     private val scope: CoroutineScope
 ) {
+    data class CalibrationQuiz(val question: String, val outcome: Int, val explanation: String)
+
     private val builder = ContextBuilder(repo, settings, attachments, kb)
     private val memory = MemoryEngine(repo)
     private val planner = PingPlanner(repo, runtime)
@@ -59,13 +65,13 @@ class Brain(
     private val pingLock = Mutex()
     private val reflecting = AtomicBoolean(false)
     private val summarizing = AtomicBoolean(false)
+    private val weeklyRunning = AtomicBoolean(false)
 
     private val typingState = MutableStateFlow<Set<Long>>(emptySet())
+    private val streamingState = MutableStateFlow<Map<Long, List<String>>>(emptyMap())
 
-    /** В каких чатах Атлас сейчас «печатает». */
     val typing: StateFlow<Set<Long>> = typingState.asStateFlow()
-
-    /** Какой чат сейчас открыт на экране (0 — никакой): туда не шлём пуш-уведомление. */
+    val streaming: StateFlow<Map<Long, List<String>>> = streamingState.asStateFlow()
     val visibleSession = MutableStateFlow(0L)
 
     private fun setTyping(sessionId: Long, on: Boolean) {
@@ -74,17 +80,32 @@ class Brain(
         }
     }
 
-    // ───────────────────────── Ответ на сообщения ─────────────────────────
+    private fun setStreaming(sessionId: Long, partials: List<String>) {
+        synchronized(streamingState) {
+            val map = streamingState.value.toMutableMap()
+            if (partials.isEmpty()) map.remove(sessionId) else map[sessionId] = partials
+            streamingState.value = map
+        }
+    }
+
+    // ───────────────────────── Ответ в чате (Streaming + SafetyGuard) ─────────────────────────
 
     fun requestRespond(sessionId: Long) {
         scope.launch { respond(sessionId, paced = true) }
+    }
+
+    fun requestRetry(sessionId: Long, messageId: Long) {
+        scope.launch {
+            repo.messageDao.setStatus(messageId, "ok", "")
+            handled.remove(sessionId)
+            respond(sessionId, paced = true)
+        }
     }
 
     fun requestKickoff(sessionId: Long) {
         scope.launch { kickoff(sessionId) }
     }
 
-    /** Переспросить: прежний ответ уже удалён, отвечаем на последнее сообщение заново. */
     fun requestRegenerate(sessionId: Long) {
         scope.launch {
             handled.remove(sessionId)
@@ -92,7 +113,6 @@ class Brain(
         }
     }
 
-    /** @return текст ошибки или null, если всё прошло штатно. */
     suspend fun respond(sessionId: Long, paced: Boolean): String? {
         val lock = locks.getOrPut(sessionId) { Mutex() }
         val error: String? = lock.withLock {
@@ -110,7 +130,6 @@ class Brain(
                     val now = Timex.now()
                     val built = builder.chatTurn(session, kickoff = false, now = now)
 
-                    // Критический протокол: при остром риске самоповреждения не ждём сеть/фильтры API.
                     if (built.assessment.level == SafetyGuard.RiskLevel.CRISIS) {
                         val userName = repo.profile().name
                         val crisisReply = Reply(
@@ -125,9 +144,29 @@ class Brain(
                         break
                     }
 
-                    val result = call(built, Protocol.chatSchema, 6000, 2)
+                    val canStream = settings.value.streamingEnabled &&
+                        !built.useSearch && !built.useUrlContext &&
+                        visibleSession.value == sessionId
+
+                    val result = if (canStream) {
+                        var lastEmit = 0L
+                        streamCall(built, Protocol.chatSchema, 6000, 2) { acc ->
+                            val t = System.currentTimeMillis()
+                            if (t - lastEmit >= 75L) {
+                                val parts = Protocol.extractPartialMessages(acc)
+                                if (parts.isNotEmpty()) {
+                                    setStreaming(sessionId, parts)
+                                    lastEmit = t
+                                }
+                            }
+                        }
+                    } else {
+                        call(built, Protocol.chatSchema, 6000, 2)
+                    }
+
+                    setStreaming(sessionId, emptyList())
+
                     if (result is GeminiClient.Result.Fail) {
-                        // Если API заблокировал эмоциональный текст фильтром SAFETY — даём тёплую страховку, а не ошибку.
                         if (result.kind == GeminiClient.Result.Kind.BLOCKED) {
                             val userName = repo.profile().name
                             val fallbackReply = Reply(
@@ -155,7 +194,7 @@ class Brain(
                         break
                     }
                     if (lastUser.status != "ok") repo.messageDao.setStatus(lastUser.id, "ok", "")
-                    deliver(session, reply, "chat", paced, ok)
+                    deliver(session, reply, "chat", paced = paced && !canStream, usage = ok)
                     handled[sessionId] = maxOf(built.lastUserId, lastUser.id)
                 } catch (t: Throwable) {
                     Logx.e("respond failed", t)
@@ -163,6 +202,7 @@ class Brain(
                     markFailed(lastUser.id, failure)
                     break
                 } finally {
+                    setStreaming(sessionId, emptyList())
                     setTyping(sessionId, false)
                 }
             }
@@ -171,6 +211,7 @@ class Brain(
         scope.launch {
             summarize(sessionId)
             reflect(false)
+            maybeAutoWeeklyReview()
         }
         return error
     }
@@ -179,7 +220,6 @@ class Brain(
         repo.messageDao.setStatus(messageId, "error", JSONObject().put("error", error).toString())
     }
 
-    /** Атлас начинает новую беседу первым. */
     suspend fun kickoff(sessionId: Long) {
         val lock = locks.getOrPut(sessionId) { Mutex() }
         lock.withLock {
@@ -201,7 +241,7 @@ class Brain(
                             session,
                             Reply(
                                 messages = Persona.offlineGreeting(name),
-                                quick = listOf("Я в тупике 🧱", "Накрыла тревога 🌊", "Апатия и ступор ⚡")
+                                quick = listOf("Я в тупике 🧱", "Накрыла тревога 🌊", "Режим Учитель 🎓")
                             ),
                             "chat",
                             paced = true,
@@ -226,19 +266,57 @@ class Brain(
         schema: JSONObject,
         maxTokens: Int,
         retries: Int,
-        thinking: String? = null
+        thinking: String? = null,
+        useDeepModel: Boolean = false
     ): GeminiClient.Result {
         val s = settings.value
+        val model = if (useDeepModel) s.deepModel else s.model
+        val fallbacks = if (useDeepModel) Settings.DEEP_MODELS + Settings.FALLBACK_MODELS else Settings.FALLBACK_MODELS
         return gemini.generate(
-            settings.apiKey(), s.model,
+            settings.apiKey(),
+            model,
             GeminiClient.Request(
-                system = built.system, parts = built.parts, schema = schema, jsonMode = true,
-                maxTokens = maxTokens, thinking = thinking ?: s.thinking, retries = retries
-            )
+                system = built.system,
+                parts = built.parts,
+                schema = schema,
+                jsonMode = true,
+                maxTokens = maxTokens,
+                thinking = thinking ?: s.thinking,
+                retries = retries,
+                useSearch = built.useSearch,
+                useUrlContext = built.useUrlContext
+            ),
+            fallbackModels = fallbacks
         )
     }
 
-    /** Применяет аналитику в память, кладёт СМС в чат, обновляет сессию и шлёт уведомление. */
+    private suspend fun streamCall(
+        built: ContextBuilder.Built,
+        schema: JSONObject,
+        maxTokens: Int,
+        retries: Int,
+        onDelta: suspend (String) -> Unit
+    ): GeminiClient.Result {
+        val s = settings.value
+        return gemini.streamGenerate(
+            settings.apiKey(),
+            s.model,
+            GeminiClient.Request(
+                system = built.system,
+                parts = built.parts,
+                schema = schema,
+                jsonMode = true,
+                maxTokens = maxTokens,
+                thinking = s.thinking,
+                retries = retries,
+                useSearch = built.useSearch,
+                useUrlContext = built.useUrlContext
+            ),
+            fallbackModels = Settings.FALLBACK_MODELS,
+            onAccumulatedText = onDelta
+        )
+    }
+
     private suspend fun deliver(
         session: SessionEntity,
         reply: Reply,
@@ -257,7 +335,9 @@ class Brain(
             if (pacing && i > 0) delay((320L + text.length * 10L).coerceAtMost(1400L))
             val visible = visibleSession.value == session.id
             repo.addAtlasMessage(
-                sessionId = session.id, text = text, kind = kind,
+                sessionId = session.id,
+                text = text,
+                kind = kind,
                 quick = if (last) reply.quick else emptyList(),
                 meta = if (last) meta else "",
                 countUnread = !visible
@@ -265,7 +345,7 @@ class Brain(
         }
 
         if (delta.planCreated.isNotEmpty()) {
-            repo.addInfo(session.id, "📋 План прорыва «${delta.planCreated}» зафиксирован: ${delta.planSteps} шаг(ов). Вперёд!")
+            repo.addInfo(session.id, "📋 WOOP-план «${delta.planCreated}» зафиксирован: ${delta.planSteps} шаг(ов). Вперёд!")
         }
         if (delta.planFinished.isNotEmpty()) {
             repo.addInfo(session.id, "🔥 План «${delta.planFinished}» отработан полностью")
@@ -297,7 +377,6 @@ class Brain(
         return o.toString()
     }
 
-    /** Ответ пользователя прямо из шторки уведомлений. */
     suspend fun replyFromNotification(sessionId: Long, text: String) {
         if (repo.sessionDao.get(sessionId) == null) return
         repo.addUserMessage(sessionId, text, emptyList())
@@ -332,123 +411,137 @@ class Brain(
         notifier.cancelChat(sessionId)
     }
 
-    // ───────────────────────── Проактивные «СМС» по расписанию ─────────────────────────
+    // ───────────────────────── Проактивные «СМС» (без гонок) ─────────────────────────
 
-    /** Полный цикл: написать (если уместно) и поставить следующий будильник. */
     suspend fun pingCycle(force: Boolean, forcedKind: String?) {
-        val status = try {
-            firePing(force, forcedKind)
-        } catch (t: Throwable) {
-            Logx.e("ping failed", t)
-            "error"
-        }
-        Logx.d("ping status: $status")
-        if (status == "active" || status == "busy") {
-            val at = Timex.now() + rnd.nextInt(5, 10) * 60_000L
-            runtime.nextPingAt = at
-            alarms.arm(at)
-        } else {
-            rearm()
+        pingLock.withLock {
+            val status = try {
+                firePingLocked(force, forcedKind)
+            } catch (t: Throwable) {
+                Logx.e("ping failed", t)
+                "error"
+            }
+            Logx.d("ping status: $status")
+            if (status == "active" || status == "busy") {
+                val at = Timex.now() + rnd.nextInt(5, 10) * 60_000L
+                runtime.nextPingAt = at
+                alarms.arm(at)
+            } else {
+                rearmLocked()
+            }
         }
     }
 
-    private suspend fun firePing(force: Boolean, forcedKind: String?): String = pingLock.withLock {
+    private suspend fun firePingLocked(force: Boolean, forcedKind: String?): String {
         val s = settings.value
         val now = Timex.now()
-        if (!s.onboarded) return@withLock "not_onboarded"
+        if (!s.onboarded) return "not_onboarded"
         if (!force) {
-            if (!s.pingsEnabled) return@withLock "disabled"
-            if (runtime.snoozeUntil > now) return@withLock "snoozed"
-            if (PingScheduler.inQuiet(Timex.minuteOfDay(now), s)) return@withLock "quiet"
-            if (repo.pingDao.countSince(startOfDay(now)) >= s.dailyPingCap) return@withLock "cap"
+            if (!s.pingsEnabled) return "disabled"
+            if (runtime.snoozeUntil > now) return "snoozed"
+            if (PingScheduler.inQuiet(Timex.minuteOfDay(now), s)) return "quiet"
+            if (now - runtime.lastPingAt < 2 * 60_000L) return "too_soon"
+            if (repo.pingDao.countSince(Timex.startOfDay(now)) >= s.dailyPingCap) return "cap"
             val lastUserAt = repo.messageDao.lastUserAt() ?: 0L
-            if (now - lastUserAt < 3 * 60_000L) return@withLock "active"
-            if (typingState.value.isNotEmpty()) return@withLock "busy"
+            if (now - lastUserAt < 3 * 60_000L) return "active"
+            if (typingState.value.isNotEmpty()) return "busy"
         }
 
         val session = targetSession()
-        val unanswered = repo.pingDao.unansweredSince(now - 36 * Srs.HOUR)
-        val plan = planner.plan(session, s, now, rnd, forcedKind)
+        val sessionLock = locks.getOrPut(session.id) { Mutex() }
+        return sessionLock.withLock {
+            val freshSession = repo.sessionDao.get(session.id) ?: session
+            val unanswered = repo.pingDao.unansweredSince(now - 36 * Srs.HOUR)
+            val plan = planner.plan(freshSession, s, now, rnd, forcedKind)
 
-        var texts: List<String> = emptyList()
-        var quick: List<String> = emptyList()
-        var asked = plan.askedRef
-        var source = "ai"
-        var kind = plan.kind
-        var kbId = ""
-        var usage: GeminiClient.Result.Ok? = null
-        var anchors: List<AnchorNote> = emptyList()
-        var mood = 0
-        var emotion = ""
+            var texts: List<String> = emptyList()
+            var quick: List<String> = emptyList()
+            var asked = plan.askedRef
+            var source = "ai"
+            var kind = plan.kind
+            var kbId = ""
+            var usage: GeminiClient.Result.Ok? = null
+            var anchors: List<AnchorNote> = emptyList()
+            var mood = 0
+            var emotion = ""
 
-        if (settings.apiKey().isNotBlank() && online()) {
-            val built = builder.ping(session, plan, now)
-            val result = call(built, Protocol.chatSchema, 2500, 1)
-            if (result is GeminiClient.Result.Ok) {
-                val reply = Protocol.parse(result.text)
-                if (reply != null) {
-                    texts = reply.messages.take(2)
-                    quick = reply.quick
-                    anchors = reply.anchors
-                    mood = reply.mood
-                    emotion = reply.emotion
-                    if (reply.asked.isNotEmpty()) asked = reply.asked
-                    usage = result
+            if (settings.apiKey().isNotBlank() && online()) {
+                val built = builder.ping(freshSession, plan, now)
+                val result = call(built, Protocol.chatSchema, 2500, 1)
+                if (result is GeminiClient.Result.Ok) {
+                    val reply = Protocol.parse(result.text)
+                    if (reply != null) {
+                        texts = reply.messages.take(2)
+                        quick = reply.quick
+                        anchors = reply.anchors
+                        mood = reply.mood
+                        emotion = reply.emotion
+                        if (reply.asked.isNotEmpty()) asked = reply.asked
+                        usage = result
+                    }
+                } else if (result is GeminiClient.Result.Fail) {
+                    runtime.lastError = Timex.hhmm(now) + " · пинг · " + result.kind.name + " · " + result.message.take(200)
                 }
-            } else if (result is GeminiClient.Result.Fail) {
-                runtime.lastError = Timex.hhmm(now) + " · пинг · " + result.kind.name + " · " + result.message.take(200)
             }
-        }
 
-        if (texts.isEmpty()) {
-            source = "offline"
-            val due = repo.anchorDao.due(now, 5).let { if (it.isEmpty()) null else it[rnd.nextInt(it.size)] }
-            val lastUserMsg = repo.messageDao.recentDesc(session.id, 10)
-                .firstOrNull { it.role == Repository.ROLE_USER }?.text.orEmpty()
-            val states = kb.inferStates(lastUserMsg, now) + plan.states
-            val recentKbIds = repo.pingDao.recentKbIds(24).toHashSet()
-            val off = OfflineBank.make(
-                kb = kb,
-                rnd = rnd,
-                dueAnchorPhrase = due?.phrase,
-                dueAnchorWhy = due?.why,
-                states = states,
-                unanswered = unanswered,
-                excludeKbIds = recentKbIds,
-                now = now
+            if (texts.isEmpty()) {
+                source = "offline"
+                val dueAnchor = repo.anchorDao.due(now, 5).let { if (it.isEmpty()) null else it[rnd.nextInt(it.size)] }
+                val dueCard = repo.knowledgeCardDao.due(now, 5).let { if (it.isEmpty()) null else it[rnd.nextInt(it.size)] }
+                val duePred = repo.predictionDao.due(now, 3).firstOrNull()
+                val lastUserMsg = repo.messageDao.recentDesc(freshSession.id, 10)
+                    .firstOrNull { it.role == Repository.ROLE_USER }?.text.orEmpty()
+                val states = kb.inferStates(lastUserMsg, now) + plan.states
+                val recentKbIds = repo.pingDao.recentKbIds(24).toHashSet()
+                val off = OfflineBank.make(
+                    kb = kb,
+                    rnd = rnd,
+                    dueAnchorPhrase = dueAnchor?.phrase,
+                    dueAnchorWhy = dueAnchor?.why,
+                    states = states,
+                    unanswered = unanswered,
+                    excludeKbIds = recentKbIds,
+                    now = now,
+                    dueCardFront = dueCard?.front,
+                    duePredQuestion = duePred?.question,
+                    duePredPct = duePred?.probabilityPct ?: 50
+                )
+                texts = listOf(off.text)
+                quick = off.quick
+                kind = off.kind
+                kbId = off.kbId
+                asked = when {
+                    off.kind == "anchor_due" && dueAnchor != null -> "A${dueAnchor.id}"
+                    off.kind == "card_due" && dueCard != null -> "K${dueCard.id}"
+                    else -> ""
+                }
+                anchors = emptyList()
+            }
+
+            val delta = memory.apply(
+                freshSession.copy(askedRef = ""),
+                Reply(messages = texts, quick = quick, mood = mood, emotion = emotion, asked = asked, anchors = anchors),
+                now
             )
-            texts = listOf(off.text)
-            quick = off.quick
-            kind = off.kind
-            kbId = off.kbId
-            asked = if (off.kind == "anchor_due" && due != null) "A${due.id}" else ""
-            anchors = emptyList()
+            val finalAsked = delta.newAskedRef.ifEmpty { if (source == "offline") asked else plan.askedRef }
+            val visible = visibleSession.value == freshSession.id
+            var lastId = 0L
+            for ((i, text) in texts.withIndex()) {
+                val last = i == texts.lastIndex
+                val meta = if (last) {
+                    val o = JSONObject().put("ping", kind).put("source", source)
+                    if (delta.anchorsAdded > 0) o.put("anchors", delta.anchorsAdded)
+                    if (usage != null) o.put("in", usage.promptTokens).put("out", usage.outputTokens).put("model", usage.model)
+                    o.toString()
+                } else ""
+                lastId = repo.addAtlasMessage(freshSession.id, text, "ping", if (last) quick else emptyList(), meta, !visible)
+            }
+            repo.sessionDao.setAsked(freshSession.id, finalAsked)
+            repo.recordPing(freshSession.id, lastId, kind, source, kbId, now)
+            runtime.lastPingAt = now
+            if (!visible) postNotification(freshSession.id, alert = true)
+            "sent:$kind:$source"
         }
-
-        // Применяем память пинга (новые якоря и ссылку на заданный шаг/якорь, без оценки ответа до отклика).
-        val delta = memory.apply(
-            session.copy(askedRef = ""),
-            Reply(messages = texts, quick = quick, mood = mood, emotion = emotion, asked = asked, anchors = anchors),
-            now
-        )
-        val finalAsked = delta.newAskedRef.ifEmpty { if (source == "offline") asked else plan.askedRef }
-        val visible = visibleSession.value == session.id
-        var lastId = 0L
-        for ((i, text) in texts.withIndex()) {
-            val last = i == texts.lastIndex
-            val meta = if (last) {
-                val o = JSONObject().put("ping", kind).put("source", source)
-                if (delta.anchorsAdded > 0) o.put("anchors", delta.anchorsAdded)
-                if (usage != null) o.put("in", usage.promptTokens).put("out", usage.outputTokens).put("model", usage.model)
-                o.toString()
-            } else ""
-            lastId = repo.addAtlasMessage(session.id, text, "ping", if (last) quick else emptyList(), meta, !visible)
-        }
-        repo.sessionDao.setAsked(session.id, finalAsked)
-        repo.recordPing(session.id, lastId, kind, source, kbId, now)
-        runtime.lastPingAt = now
-        if (!visible) postNotification(session.id, alert = true)
-        "sent:$kind:$source"
     }
 
     private suspend fun targetSession(): SessionEntity {
@@ -457,8 +550,9 @@ class Brain(
         return repo.ensureHome()
     }
 
-    /** Ставит будильник следующего «смс». */
-    suspend fun rearm(): Long {
+    suspend fun rearm(): Long = pingLock.withLock { rearmLocked() }
+
+    private suspend fun rearmLocked(): Long {
         val s = settings.value
         if (!s.pingsEnabled || !s.onboarded) {
             alarms.cancel()
@@ -469,7 +563,7 @@ class Brain(
         val unanswered = repo.pingDao.unansweredSince(now - 36 * Srs.HOUR)
         var at = PingScheduler.next(now, s, unanswered, rnd)
         if (runtime.snoozeUntil > at) at = runtime.snoozeUntil + rnd.nextInt(1, 6) * 60_000L
-        if (repo.pingDao.countSince(startOfDay(now)) >= s.dailyPingCap) {
+        if (repo.pingDao.countSince(Timex.startOfDay(now)) >= s.dailyPingCap) {
             at = maxOf(at, nextMorning(now) + rnd.nextInt(2, 25) * 60_000L)
         }
         runtime.nextPingAt = at
@@ -477,7 +571,6 @@ class Brain(
         return at
     }
 
-    /** Проверка «расписание живо?» — при запуске, после перезагрузки и сторожем каждые 15 минут. */
     suspend fun ensureScheduled() {
         val s = settings.value
         if (!s.onboarded) return
@@ -505,9 +598,6 @@ class Brain(
         rearm()
     }
 
-    private fun startOfDay(now: Long): Long =
-        Timex.dateTime(now).toLocalDate().atStartOfDay(Timex.zone()).toInstant().toEpochMilli()
-
     private fun nextMorning(now: Long): Long {
         val s = settings.value
         val tomorrow = Timex.dateTime(now).toLocalDate().plusDays(1)
@@ -523,9 +613,155 @@ class Brain(
         true
     }
 
+    // ───────────────────────── Новые когнитивные движки (Синтезатор, Решения, Калибровка, Обзор) ─────────────────────────
+
+    suspend fun extractAndSaveSource(
+        titleHint: String,
+        kind: String,
+        contentOrUrl: String,
+        attachment: Attachment? = null
+    ): Result<Long> {
+        if (settings.apiKey().isBlank()) return Result.failure(IllegalStateException("Добавь API-ключ Gemini в настройках"))
+        val built = builder.sourceExtraction(
+            titleHint = titleHint,
+            kind = kind,
+            contentOrUrl = contentOrUrl,
+            attachment = attachment,
+            webEnabled = settings.value.webSearchEnabled
+        )
+        val result = call(built, Protocol.sourceExtractSchema, 6000, 1, "medium", useDeepModel = true)
+        if (result is GeminiClient.Result.Fail) return Result.failure(IllegalStateException(result.human()))
+        val ok = result as GeminiClient.Result.Ok
+        val note = Protocol.parseExtractedSource(ok.text)
+            ?: return Result.failure(IllegalStateException("Не удалось структурировать материал. Попробуй сократить фрагмент."))
+
+        val rawExcerpt = when {
+            attachment?.isText == true -> attachments.readText(attachment).take(12_000)
+            attachment == null -> contentOrUrl.take(12_000)
+            else -> note.summary
+        }
+        val originRef = attachment?.path ?: contentOrUrl.take(500)
+        val drafts = note.cards.map { c ->
+            Repository.CardDraft(
+                kind = c.kind,
+                front = c.front,
+                back = c.back,
+                hint = c.hint,
+                skillId = c.skillId,
+                tags = c.tags
+            )
+        }
+        val sid = repo.saveSourceWithCards(
+            title = note.title,
+            kind = kind,
+            originRef = originRef,
+            summary = note.summary,
+            keyModels = note.keyModels,
+            blindSpots = note.blindSpots,
+            rawExcerpt = rawExcerpt,
+            cards = drafts
+        )
+        repo.addXp(20, Timex.now())
+        repo.registerActivity(Timex.now(), 20)
+        return Result.success(sid)
+    }
+
+    suspend fun assistDecision(
+        title: String,
+        contextText: String,
+        alternatives: List<String>,
+        chosenOption: String,
+        confidencePct: Int
+    ): Result<DecisionAssistNote> {
+        if (settings.apiKey().isBlank()) return Result.failure(IllegalStateException("Нужен API-ключ Gemini"))
+        val built = builder.decisionAssist(
+            title = title,
+            context = contextText,
+            alternatives = alternatives,
+            chosenOption = chosenOption,
+            confidencePct = confidencePct,
+            webSearch = settings.value.webSearchEnabled
+        )
+        val result = call(built, Protocol.decisionAssistSchema, 2500, 1, "medium", useDeepModel = true)
+        if (result is GeminiClient.Result.Fail) return Result.failure(IllegalStateException(result.human()))
+        val ok = result as GeminiClient.Result.Ok
+        val note = Protocol.parseDecisionAssist(ok.text)
+            ?: return Result.failure(IllegalStateException("Не удалось разобрать ответ аудитора"))
+        return Result.success(note)
+    }
+
+    suspend fun generateCalibrationQuiz(topicHint: String): Result<CalibrationQuiz> {
+        if (settings.apiKey().isBlank()) return Result.failure(IllegalStateException("Нужен API-ключ Gemini"))
+        val built = builder.calibrationQuiz(topicHint, settings.value.webSearchEnabled)
+        val result = call(built, Protocol.calibrationQuizSchema, 1500, 1, "low", useDeepModel = false)
+        if (result is GeminiClient.Result.Fail) return Result.failure(IllegalStateException(result.human()))
+        val o = Protocol.extractObject((result as GeminiClient.Result.Ok).text)
+            ?: return Result.failure(IllegalStateException("Неверный формат вопроса"))
+        val q = o.str("question").trim()
+        val exp = o.str("explanation").trim()
+        if (q.isEmpty()) return Result.failure(IllegalStateException("Пустой вопрос"))
+        val out = if (o.int("outcome", 0) > 0) 1 else 0
+        return Result.success(CalibrationQuiz(q, out, exp))
+    }
+
+    private suspend fun maybeAutoWeeklyReview() {
+        val s = settings.value
+        if (!s.weeklyReviewEnabled || settings.apiKey().isBlank()) return
+        val now = Timex.now()
+        val dt = Timex.dateTime(now)
+        val currentWeek = Timex.dayOf(Timex.startOfWeek(now))
+        if (dt.dayOfWeek.value == 7 && dt.hour >= 17 && runtime.weeklyReviewWeek != currentWeek) {
+            generateWeeklyReview(force = false)
+        }
+    }
+
+    suspend fun generateWeeklyReview(force: Boolean): Boolean {
+        if (settings.apiKey().isBlank()) return false
+        if (!weeklyRunning.compareAndSet(false, true)) return false
+        try {
+            val now = Timex.now()
+            val weekStartDay = Timex.dayOf(Timex.startOfWeek(now))
+            if (!force && runtime.weeklyReviewWeek == weekStartDay) return false
+            val userCount = repo.messageDao.userCount()
+            if (!force && userCount < 5) return false
+
+            val built = builder.weeklyReview(now)
+            val result = call(built, Protocol.weeklyReviewSchema, 2500, 1, "medium", useDeepModel = true)
+            if (result !is GeminiClient.Result.Ok) return false
+            val note = Protocol.parseWeeklyReview(result.text) ?: return false
+
+            val resolved = repo.predictionDao.allResolved()
+            val brier = if (resolved.isEmpty()) -1.0 else Srs.computeCalibration(resolved.map { it.probabilityPct to it.outcome }).brierScore
+            val recentMoods = repo.dailyDao.recent(7).filter { it.moodCount > 0 }
+            val avgMood = if (recentMoods.isEmpty()) 0.0
+            else recentMoods.sumOf { it.moodSum }.toDouble() / recentMoods.sumOf { it.moodCount }.coerceAtLeast(1)
+
+            repo.weeklyReviewDao.insert(
+                WeeklyReviewEntity(
+                    weekStartDay = weekStartDay,
+                    summary = note.summary,
+                    nextWeekChallenge = note.nextWeekChallenge,
+                    topTrigger = note.topTrigger,
+                    bestWin = note.bestWin,
+                    scoresJson = note.scoresJson,
+                    brierAvg = brier,
+                    avgMood = avgMood,
+                    createdAt = now
+                )
+            )
+            runtime.weeklyReviewWeek = weekStartDay
+            repo.updateProfile { it.copy(lastWeeklyReviewAt = now) }
+            return true
+        } catch (t: Throwable) {
+            Logx.w("weekly review failed", t)
+            return false
+        } finally {
+            weeklyRunning.set(false)
+        }
+    }
+
     // ───────────────────────── Рефлексия и сжатие ─────────────────────────
 
-    /** Раз в ~25 сообщений пользователя Атлас пересматривает досье: пишет заметки и тактику. */
     suspend fun reflect(force: Boolean): Boolean {
         if (settings.apiKey().isBlank()) return false
         if (!reflecting.compareAndSet(false, true)) return false
@@ -539,7 +775,7 @@ class Brain(
             if (userCount == 0) return false
 
             val built = builder.reflection(now)
-            val result = call(built, Protocol.reflectionSchema, 1800, 1, "low")
+            val result = call(built, Protocol.reflectionSchema, 1800, 1, "low", useDeepModel = false)
             if (result !is GeminiClient.Result.Ok) return false
             val obj = Protocol.extractObject(result.text) ?: return false
             val note = obj.str("note").trim()
@@ -563,7 +799,6 @@ class Brain(
         }
     }
 
-    /** Длинную беседу сжимаем: старые сообщения превращаются в выжимку. */
     suspend fun summarize(sessionId: Long) {
         if (settings.apiKey().isBlank()) return
         if (!summarizing.compareAndSet(false, true)) return
@@ -573,7 +808,7 @@ class Brain(
             val chunk = repo.messageDao.after(sessionId, session.summarizedUpToId, 24)
             if (chunk.size < 12) return
             val built = builder.summary(session.summary, chunk, Timex.now())
-            val result = call(built, Protocol.summarySchema, 1200, 1, "minimal")
+            val result = call(built, Protocol.summarySchema, 1200, 1, "minimal", useDeepModel = false)
             if (result !is GeminiClient.Result.Ok) return
             val summary = Protocol.extractObject(result.text)?.str("summary")?.trim().orEmpty()
             if (summary.length < 20) return
@@ -588,10 +823,16 @@ class Brain(
     // ───────────────────────── Служебное ─────────────────────────
 
     suspend fun testKey(key: String, model: String): GeminiClient.Result = gemini.generate(
-        key, model,
+        key,
+        model,
         GeminiClient.Request(
-            system = "", parts = listOf(GeminiClient.Part.Text("Ответь только одним словом: OK")),
-            schema = null, jsonMode = false, maxTokens = 256, thinking = "auto", retries = 0
+            system = "",
+            parts = listOf(GeminiClient.Part.Text("Ответь только одним словом: OK")),
+            schema = null,
+            jsonMode = false,
+            maxTokens = 256,
+            thinking = "auto",
+            retries = 0
         )
     )
 
