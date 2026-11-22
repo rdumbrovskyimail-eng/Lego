@@ -10,7 +10,7 @@ import com.legode.friedrich.core.strings
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Разобранный ответ Атласа: СМС для пользователя + психо-эмоциональная аналитика для досье. */
+/** Разобранный ответ Атласа: СМС для пользователя + психо-когнитивная аналитика для досье. */
 data class Reply(
     val messages: List<String>,
     val quick: List<String> = emptyList(),
@@ -20,7 +20,7 @@ data class Reply(
     val emotion: String = "",
     /** none | done | partial | skipped */
     val result: String = "none",
-    /** A12 (якорь) | S7 (шаг плана) | N3 (новый шаг плана) | "" */
+    /** A12 (якорь) | S7 (шаг плана) | N3 (новый шаг плана) | K5 (карточка) | "" */
     val asked: String = "",
     val anchors: List<AnchorNote> = emptyList(),
     val traps: List<TrapNote> = emptyList(),
@@ -37,12 +37,52 @@ data class Reply(
 data class AnchorNote(val phrase: String, val why: String, val source: String, val trigger: String)
 data class TrapNote(val thought: String, val antidote: String, val skillId: String, val why: String)
 data class SkillNote(val id: String, val d: Int)
-data class PlanStepNote(val step: String, val why: String)
-data class PlanNote(val title: String, val steps: List<PlanStepNote>)
+data class PlanStepNote(val step: String, val why: String, val obstacle: String = "", val ifThenRule: String = "")
+data class PlanNote(
+    val title: String,
+    val steps: List<PlanStepNote>,
+    val wish: String = "",
+    val outcome: String = "",
+    val mainObstacle: String = ""
+)
+
+data class ExtractedCardNote(
+    val kind: String,
+    val front: String,
+    val back: String,
+    val hint: String,
+    val skillId: String,
+    val tags: String
+)
+
+data class ExtractedSourceNote(
+    val title: String,
+    val summary: String,
+    val keyModels: List<String>,
+    val blindSpots: String,
+    val cards: List<ExtractedCardNote>
+)
+
+data class DecisionAssistNote(
+    val baseRateNote: String,
+    val preMortem: String,
+    val ifThenSafeguard: String,
+    val suggestedPct: Int
+)
+
+data class WeeklyReviewNote(
+    val summary: String,
+    val nextWeekChallenge: String,
+    val topTrigger: String,
+    val bestWin: String,
+    val scoresJson: String
+)
 
 object Protocol {
 
     private fun stringType(desc: String): JSONObject = JSONObject().put("type", "string").put("description", desc)
+
+    private fun intType(desc: String): JSONObject = JSONObject().put("type", "integer").put("description", desc)
 
     private fun arrayType(items: JSONObject, desc: String): JSONObject =
         JSONObject().put("type", "array").put("items", items).put("description", desc)
@@ -59,14 +99,14 @@ object Protocol {
         return o
     }
 
-    /** JSON-схема ответа в чате и в проактивных «СМС-пингах». */
+    /** Компактная схема для чата и пингов — не раздуваем, чтобы быстрая модель не теряла точность. */
     val chatSchema: JSONObject by lazy {
         val anchor = objectType(
             listOf(
                 "phrase" to stringType("Сильная опорная фраза, цитата или рефрейм"),
                 "why" to stringType("Короткий разбор: почему это работает"),
-                "source" to stringType("Автор, философская школа или метод"),
-                "trigger" to stringType("При каком состоянии применять (тревога, апатия, тупик, ночь и т.п.)")
+                "source" to stringType("Автор, школа или метод"),
+                "trigger" to stringType("При каком состоянии применять")
             ),
             listOf("phrase", "why")
         )
@@ -82,20 +122,25 @@ object Protocol {
         val skill = objectType(
             listOf(
                 "id" to stringType("id навыка из указателя"),
-                "d" to JSONObject().put("type", "integer").put("description", "2, 1, -1 или -2")
+                "d" to intType("2, 1, -1 или -2")
             ),
             listOf("id", "d")
         )
         val planStep = objectType(
             listOf(
-                "step" to stringType("Конкретный шаг-глагол прорыва"),
-                "why" to stringType("Опора / зачем это делать или микро-критерий")
+                "step" to stringType("Конкретный шаг-глагол"),
+                "why" to stringType("Зачем это делать или критерий"),
+                "obstacle" to stringType("Главная внутренняя помеха для этого шага (WOOP)"),
+                "if_then" to stringType("Правило «Если [триггер], то я [действие]»")
             ),
             listOf("step")
         )
         val plan = objectType(
             listOf(
-                "title" to stringType("Название плана выхода/прорыва"),
+                "title" to stringType("Название плана прорыва"),
+                "wish" to stringType("Главная цель (WOOP)"),
+                "outcome" to stringType("Осязаемый лучший результат"),
+                "main_obstacle" to stringType("Ключевая внутренняя помеха"),
                 "steps" to arrayType(planStep, "Шаги плана, до 30")
             ),
             listOf("title", "steps")
@@ -103,9 +148,9 @@ object Protocol {
         val profile = objectType(
             listOf(
                 "name" to stringType("Имя пользователя"),
-                "goal" to stringType("Главная жизненная цель или точка выхода"),
+                "goal" to stringType("Главная жизненная цель"),
                 "interests" to stringType("Ценности, опоры, что даёт силы"),
-                "stage" to stringType("Только в аудите состояния: истощение, спад, стабильность или сила")
+                "stage" to stringType("Только в аудите: истощение, спад, стабильность или сила")
             ),
             emptyList()
         )
@@ -113,14 +158,14 @@ object Protocol {
             listOf(
                 "messages" to arrayType(JSONObject().put("type", "string"), "1–3 СМС для пользователя"),
                 "quick" to arrayType(JSONObject().put("type", "string"), "0–4 кнопки быстрого ответа"),
-                "mood" to JSONObject().put("type", "integer").put("description", "Оценка состояния 1..10 (или 0 если рано оценивать)"),
+                "mood" to intType("Оценка состояния 1..10 (или 0 если рано оценивать)"),
                 "emotion" to stringType("Главная эмоция в 1-2 слова"),
                 "result" to JSONObject().put("type", "string")
                     .put("enum", JSONArray().put("none").put("done").put("partial").put("skipped")),
-                "asked" to stringType("Ссылка на проверяемый элемент: A12, S7, N3 или пустая строка"),
+                "asked" to stringType("Ссылка на проверяемый элемент: A12, S7, N3, K5 или пустая строка"),
                 "anchors" to arrayType(anchor, "Новые сильные якоря для банка опор"),
-                "traps" to arrayType(trap, "Выявленные когнитивные ловушки пользователя"),
-                "skills" to arrayType(skill, "Практика навыков устойчивости"),
+                "traps" to arrayType(trap, "Выявленные когнитивные ловушки"),
+                "skills" to arrayType(skill, "Практика навыков устойчивости и мышления"),
                 "facts" to arrayType(JSONObject().put("type", "string"), "Новые долговременные факты и триггеры"),
                 "profile" to profile,
                 "plan" to plan,
@@ -128,6 +173,81 @@ object Protocol {
                 "title" to stringType("Название беседы, если просили")
             ),
             listOf("messages")
+        )
+    }
+
+    /** Изолированная схема для Синтезатора знаний (разбор книг, PDF, URL, фото страниц). */
+    val sourceExtractSchema: JSONObject by lazy {
+        val card = objectType(
+            listOf(
+                "kind" to stringType("recall | transfer | critique | feynman | debias"),
+                "front" to stringType("Сильный вопрос активного извлечения или кейс на перенос"),
+                "back" to stringType("Эталонный глубокий ответ, критерии и практический вывод"),
+                "hint" to stringType("Мягкая подсказка без спойлера"),
+                "skill" to stringType("Наиболее подходящий id навыка из указателя"),
+                "tags" to stringType("2-4 ключевых слова через запятую")
+            ),
+            listOf("kind", "front", "back")
+        )
+        objectType(
+            listOf(
+                "title" to stringType("Ёмкое название материала"),
+                "summary" to stringType("Концентрированная выжимка сути в 4-6 предложениях без воды"),
+                "key_models" to arrayType(JSONObject().put("type", "string"), "3-7 главных ментальных моделей или тезисов"),
+                "blind_spots" to stringType("Какие допущения, слабые места или однобокость есть у автора"),
+                "cards" to arrayType(card, "5-10 карточек активного припоминания и критического переноса")
+            ),
+            listOf("title", "summary", "key_models", "cards")
+        )
+    }
+
+    /** Изолированная схема для помощника Лаборатории решений (Outside View + Pre-mortem). */
+    val decisionAssistSchema: JSONObject by lazy {
+        objectType(
+            listOf(
+                "base_rate_note" to stringType("Трезвый взгляд снаружи и базовая статистика для таких решений"),
+                "pre_mortem" to stringType("3 реалистичные причины, почему решение может провалиться через 6-12 месяцев"),
+                "if_then_safeguard" to stringType("Конкретный WOOP-предохранитель: Если [сигнал сбоя], то [действие]"),
+                "suggested_pct" to intType("Реалистичная базовая вероятность успеха 1..99")
+            ),
+            listOf("base_rate_note", "pre_mortem", "if_then_safeguard")
+        )
+    }
+
+    /** Изолированная схема для Воскресного Executive Review. */
+    val weeklyReviewSchema: JSONObject by lazy {
+        val scores = objectType(
+            listOf(
+                "resilience" to intType("0..100"),
+                "critical" to intType("0..100"),
+                "systems" to intType("0..100"),
+                "calibration" to intType("0..100"),
+                "learning" to intType("0..100"),
+                "execution" to intType("0..100")
+            ),
+            listOf("resilience", "critical", "systems", "calibration", "learning", "execution")
+        )
+        objectType(
+            listOf(
+                "summary" to stringType("Глубокий честный синтез недели: паттерны ума, эмоции, прогресс (5-7 предложений)"),
+                "next_week_challenge" to stringType("Один конкретный интеллектуально-поведенческий вызов на следующую неделю"),
+                "top_trigger" to stringType("Главный триггер откатов за неделю"),
+                "best_win" to stringType("Самый сильный шаг или инсайт недели"),
+                "scores" to scores
+            ),
+            listOf("summary", "next_week_challenge", "scores")
+        )
+    }
+
+    /** Изолированная схема калибровочной дуэли (тест уверенности на фактах). */
+    val calibrationQuizSchema: JSONObject by lazy {
+        objectType(
+            listOf(
+                "question" to stringType("Чёткий вопрос «да/нет» с проверяемым реальным фактом"),
+                "outcome" to intType("1 если утверждение верно, 0 если неверно"),
+                "explanation" to stringType("Короткое фактическое объяснение с цифрами")
+            ),
+            listOf("question", "outcome", "explanation")
         )
     }
 
@@ -146,10 +266,9 @@ object Protocol {
         objectType(listOf("summary" to stringType("Краткое содержание беседы")), listOf("summary"))
     }
 
-    private val REF = Regex("^[ASN]\\d{1,9}$")
+    private val REF = Regex("^[ASNK]\\d{1,9}$")
     private val FENCE = Regex("^```[a-zA-Z]*\\s*|\\s*```$")
 
-    /** Достаёт JSON-объект из ответа модели, даже если он обёрнут в текст или блок кода. */
     fun extractObject(raw: String): JSONObject? {
         val cleaned = raw.trim().replace(FENCE, "").trim()
         val start = cleaned.indexOf('{')
@@ -163,10 +282,10 @@ object Protocol {
     }
 
     /**
-     * Безопасный разбор ответа модели:
+     * Безопасный разбор ответа модели для чата:
      *  • корректный JSON → полноценный Reply;
-     *  • обрезанный JSON → спасает хотя бы сообщения;
-     *  • обычный текст (при фолбэке без JSON-режима) → одно сообщение;
+     *  • обрезанный JSON → спасает сообщения;
+     *  • обычный текст (без JSON) → одно сообщение;
      *  • пусто/битый мусор → null.
      */
     fun parse(raw: String): Reply? {
@@ -182,7 +301,6 @@ object Protocol {
             return Reply(messages = listOf(trimmed.replace(FENCE, "").trim()))
         }
 
-        // На случай вложенного "memory" поднимаем поля наверх.
         root.obj("memory")?.let { mem ->
             val keys = mem.keys()
             while (keys.hasNext()) {
@@ -218,7 +336,7 @@ object Protocol {
             )
         }.take(3)
 
-        val skills = root.arr("skills", root.arr("topics"))?.objects().orEmpty().mapNotNull { o ->
+        val skills = (root.arr("skills") ?: root.arr("topics"))?.objects().orEmpty().mapNotNull { o ->
             val t = Curriculum.resolve(o.str("id")) ?: return@mapNotNull null
             val d = o.int("d").coerceIn(-2, 2)
             if (d == 0) null else SkillNote(t.id, d)
@@ -261,8 +379,61 @@ object Protocol {
         )
     }
 
-    private fun JSONObject.arr(primary: String, fallback: JSONArray?): JSONArray? =
-        arr(primary) ?: fallback
+    fun parseExtractedSource(raw: String): ExtractedSourceNote? {
+        val o = extractObject(raw) ?: return null
+        val title = o.str("title").trim()
+        val summary = o.str("summary").trim()
+        if (title.isEmpty() || summary.isEmpty()) return null
+        val models = o.arr("key_models")?.strings().orEmpty().map { it.trim() }.filter { it.isNotEmpty() }.take(10)
+        val blindSpots = o.str("blind_spots").trim()
+        val cards = o.arr("cards")?.objects().orEmpty().mapNotNull { co ->
+            val front = co.str("front").trim()
+            val back = co.str("back").trim()
+            if (front.isEmpty() || back.isEmpty()) null
+            else ExtractedCardNote(
+                kind = co.str("kind", "recall").lowercase(),
+                front = front,
+                back = back,
+                hint = co.str("hint").trim(),
+                skillId = Curriculum.resolve(co.str("skill"))?.id ?: "",
+                tags = co.str("tags").trim()
+            )
+        }.take(15)
+        return ExtractedSourceNote(title, summary, models, blindSpots, cards)
+    }
+
+    fun parseDecisionAssist(raw: String): DecisionAssistNote? {
+        val o = extractObject(raw) ?: return null
+        val base = o.str("base_rate_note").trim()
+        val pm = o.str("pre_mortem").trim()
+        val guard = o.str("if_then_safeguard").trim()
+        if (base.isEmpty() && pm.isEmpty()) return null
+        return DecisionAssistNote(base, pm, guard, o.int("suggested_pct", 50).coerceIn(1, 99))
+    }
+
+    fun parseWeeklyReview(raw: String): WeeklyReviewNote? {
+        val o = extractObject(raw) ?: return null
+        val summary = o.str("summary").trim()
+        if (summary.isEmpty()) return null
+        val scoresObj = o.obj("scores") ?: JSONObject()
+        val cleanScores = JSONObject()
+            .put("resilience", scoresObj.int("resilience", 50).coerceIn(0, 100))
+            .put("critical", scoresObj.int("critical", 50).coerceIn(0, 100))
+            .put("systems", scoresObj.int("systems", 50).coerceIn(0, 100))
+            .put("calibration", scoresObj.int("calibration", 50).coerceIn(0, 100))
+            .put("learning", scoresObj.int("learning", 50).coerceIn(0, 100))
+            .put("execution", scoresObj.int("execution", 50).coerceIn(0, 100))
+        return WeeklyReviewNote(
+            summary = summary,
+            nextWeekChallenge = o.str("next_week_challenge").trim(),
+            topTrigger = o.str("top_trigger").trim(),
+            bestWin = o.str("best_win").trim(),
+            scoresJson = cleanScores.toString()
+        )
+    }
+
+    /** Инкрементально вытаскивает готовые и печатающиеся строки массива "messages" во время SSE-стриминга. */
+    fun extractPartialMessages(partialJson: String): List<String> = salvageMessages(partialJson, allowShortIncomplete = true)
 
     fun normalizeStage(raw: String): String = when (raw.trim().lowercase()) {
         "истощение", "кризис", "дно", "r0" -> "истощение"
@@ -277,8 +448,7 @@ object Protocol {
         val arr = root.arr("messages")
         if (arr != null) {
             for (i in 0 until arr.length()) {
-                val v = arr.opt(i)
-                when (v) {
+                when (val v = arr.opt(i)) {
                     is String -> out.add(v)
                     is JSONObject -> out.add(v.str("text", v.str("message")))
                     else -> Unit
@@ -297,9 +467,11 @@ object Protocol {
         for (i in 0 until arr.length()) {
             when (val v = arr.opt(i)) {
                 is JSONObject -> {
-                    val step = v.str("step", v.str("de", v.str("title"))).trim().take(220)
-                    val why = v.str("why", v.str("ru")).trim().take(220)
-                    if (step.isNotEmpty()) steps.add(PlanStepNote(step, why))
+                    val step = v.str("step", v.str("title")).trim().take(220)
+                    val why = v.str("why").trim().take(220)
+                    val obstacle = v.str("obstacle").trim().take(180)
+                    val ifThen = v.str("if_then", v.str("ifThenRule")).trim().take(220)
+                    if (step.isNotEmpty()) steps.add(PlanStepNote(step, why, obstacle, ifThen))
                 }
 
                 is String -> {
@@ -313,11 +485,17 @@ object Protocol {
             if (steps.size >= 30) break
         }
         if (steps.isEmpty()) return null
-        return PlanNote(o.str("title").trim().take(60).ifEmpty { "План прорыва" }, steps)
+        return PlanNote(
+            title = o.str("title").trim().take(60).ifEmpty { "План прорыва" },
+            steps = steps,
+            wish = o.str("wish").trim().take(220),
+            outcome = o.str("outcome").trim().take(220),
+            mainObstacle = o.str("main_obstacle", o.str("mainObstacle")).trim().take(220)
+        )
     }
 
-    /** Из обрезанного JSON вытаскиваем строки массива "messages". */
-    private fun salvageMessages(text: String): List<String> {
+    /** Из обрезанного или стримящегося JSON аккуратно достаёт строки массива "messages". */
+    private fun salvageMessages(text: String, allowShortIncomplete: Boolean = false): List<String> {
         val at = text.indexOf("\"messages\"")
         if (at < 0) return emptyList()
         var i = text.indexOf('[', at)
@@ -336,7 +514,8 @@ object Protocol {
             var closed = false
             while (i < text.length) {
                 val ch = text[i]
-                if (ch == '\\' && i + 1 < text.length) {
+                if (ch == '\\') {
+                    if (i + 1 >= text.length) break // ждём следующий чанк SSE
                     when (val n = text[i + 1]) {
                         'n' -> sb.append('\n')
                         't' -> sb.append('\t')
@@ -346,6 +525,9 @@ object Protocol {
                                 val code = text.substring(i + 2, i + 6).toIntOrNull(16)
                                 if (code != null) sb.append(code.toChar())
                                 i += 4
+                            } else {
+                                i = text.length
+                                break
                             }
                         }
 
@@ -363,7 +545,7 @@ object Protocol {
                 i++
             }
             val s = sb.toString().trim()
-            if (s.isNotEmpty() && (closed || s.length > 20)) out.add(s)
+            if (s.isNotEmpty() && (closed || allowShortIncomplete || s.length > 20)) out.add(s)
             if (out.size >= 4) break
         }
         return out
