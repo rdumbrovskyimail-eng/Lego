@@ -52,6 +52,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Anchor
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -63,7 +64,9 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Stop
@@ -78,6 +81,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -165,8 +169,10 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
     val session by vm.session.collectAsStateWithLifecycle()
     val messages by vm.messages.collectAsStateWithLifecycle()
     val typing by vm.typing.collectAsStateWithLifecycle()
+    val streamingMessages by vm.streamingMessages.collectAsStateWithLifecycle()
     val speaking by vm.speaking.collectAsStateWithLifecycle()
     val playing by vm.player.playing.collectAsStateWithLifecycle()
+    val settings by vm.settings.flow.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -184,6 +190,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
     var clearConfirm by remember { mutableStateOf(false) }
     var deleteConfirm by remember { mutableStateOf(false) }
     var actionFor by remember { mutableStateOf<MessageEntity?>(null) }
+    var cardDraftFor by remember { mutableStateOf<MessageEntity?>(null) }
     var selectFor by remember { mutableStateOf<MessageEntity?>(null) }
     var viewImage by remember { mutableStateOf<String?>(null) }
     var cameraFile by remember { mutableStateOf<File?>(null) }
@@ -280,7 +287,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
         messages.any { it.role == Repository.ROLE_USER }
 
     val showJump by remember { derivedStateOf { listState.firstVisibleItemIndex > 3 } }
-    LaunchedEffect(messages.size, typing) {
+    LaunchedEffect(messages.size, typing, streamingMessages.lastOrNull()?.length) {
         if (listState.firstVisibleItemIndex <= 3 || lastMessage?.role == Repository.ROLE_USER) {
             listState.animateScrollToItem(0)
         }
@@ -293,6 +300,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
     }
 
     val bubbleMax = (LocalConfiguration.current.screenWidthDp * 0.86f).dp
+    val socraticActive = (session?.socraticMode == true) || settings.socraticByDefault
 
     Column(
         Modifier
@@ -323,16 +331,25 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                     maxLines = 1, overflow = TextOverflow.Ellipsis
                 )
                 val sub = when {
+                    streamingMessages.isNotEmpty() -> "печатает…"
                     typing -> "разбирает и пишет…"
                     speaking -> "озвучивает вслух…"
                     s == null -> ""
-                    s.planId != 0L -> "📋 активный план прорыва"
+                    s.planId != 0L -> "📋 активный WOOP-план"
+                    socraticActive -> "🎓 режим тренера (сначала твоя гипотеза)"
                     s.mode != Skills.FREE -> Skills.label(s.mode, s.modeArg)
-                    else -> "психо-эмоциональный союзник"
+                    else -> "психо-когнитивный союзник"
                 }
                 Text(
-                    sub, color = if (typing || speaking) Fx.Gold else Fx.TextDim,
+                    sub, color = if (typing || speaking || socraticActive) Fx.Gold else Fx.TextDim,
                     style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+            }
+            IconButton(onClick = { vm.toggleSocratic() }) {
+                Icon(
+                    Icons.Filled.Psychology,
+                    contentDescription = "Сократический режим",
+                    tint = if (session?.socraticMode == true) Fx.Gold else Fx.TextFaint
                 )
             }
             if (speaking) {
@@ -349,6 +366,13 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                         menuOpen = false
                         main.newSession(Skills.FREE)
                     })
+                    DropdownMenuItem(
+                        text = { Text(if (session?.socraticMode == true) "Выключить режим тренера 🎓" else "Включить режим тренера 🎓") },
+                        onClick = {
+                            menuOpen = false
+                            vm.toggleSocratic()
+                        }
+                    )
                     if (canRegenerate) {
                         DropdownMenuItem(text = { Text("Переспросить (другой угол)") }, onClick = {
                             menuOpen = false
@@ -380,7 +404,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                             }
                         }
                     })
-                    DropdownMenuItem(text = { Text("Атлас практик и база") }, onClick = {
+                    DropdownMenuItem(text = { Text("Атлас и База знаний") }, onClick = {
                         menuOpen = false
                         main.open(Screen.Reference(null))
                     })
@@ -411,7 +435,12 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                if (typing) {
+                if (streamingMessages.isNotEmpty()) {
+                    val reversedStream = streamingMessages.asReversed()
+                    items(reversedStream.size, key = { idx -> "stream_$idx" }) { idx ->
+                        StreamingBubble(reversedStream[idx], bubbleMax)
+                    }
+                } else if (typing) {
                     item(key = "typing") { TypingBubble() }
                 }
                 items(rows, key = { it.key }) { row ->
@@ -429,7 +458,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                     }
                 }
             }
-            if (messages.isEmpty() && !typing) {
+            if (messages.isEmpty() && !typing && streamingMessages.isEmpty()) {
                 Column(
                     Modifier
                         .align(Alignment.Center)
@@ -439,7 +468,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                     AtlasAvatar(64.dp)
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        "Напиши честно, что происходит или где застрял.\nМожно отправить текст, голосовой выплеск, скрин переписки или список проблем.",
+                        "Напиши честно, что происходит или какую задачу решаешь.\nМожно отправить текст, ссылку на статью, голос, фото, PDF или EPUB-книгу.",
                         color = Fx.TextDim, textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -554,7 +583,11 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                             .padding(horizontal = 14.dp, vertical = 11.dp)
                     ) {
                         if (input.text.isEmpty()) {
-                            Text("Что происходит сейчас…", color = Fx.TextFaint, style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                if (socraticActive) "Твоя гипотеза или мысль…" else "Что происходит сейчас…",
+                                color = Fx.TextFaint,
+                                style = MaterialTheme.typography.bodyLarge
+                            )
                         }
                         BasicTextField(
                             value = input,
@@ -605,7 +638,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
             containerColor = Fx.Card
         ) {
             Column(Modifier.padding(bottom = 24.dp)) {
-                SheetAction(Icons.Filled.Image, "Скрин или фото", "переписка, заметки, дневник, ситуация") {
+                SheetAction(Icons.Filled.Image, "Скрин или фото", "переписка, страница книги, заметки") {
                     attachOpen = false
                     try {
                         pickImages.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
@@ -622,19 +655,20 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                         Toast.makeText(context, "Камера недоступна", Toast.LENGTH_SHORT).show()
                     }
                 }
-                SheetAction(Icons.Filled.Description, "Файл", "PDF, текст, DOCX, аудио") {
+                SheetAction(Icons.Filled.Description, "Книга или документ", "PDF, EPUB, DOCX, текст, аудио") {
                     attachOpen = false
                     try {
                         pickFiles.launch(
                             arrayOf(
-                                "application/pdf", "text/*", "audio/*", "image/*", "application/json",
+                                "application/pdf", "application/epub+zip", "text/*", "audio/*", "image/*",
+                                "application/json",
                                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                             )
                         )
                     } catch (_: Throwable) {
                     }
                 }
-                SheetAction(Icons.Filled.TextFields, "Выгрузка проблем в план", "вставь списком — Атлас разложит по шагам") {
+                SheetAction(Icons.Filled.TextFields, "Выгрузка проблем в WOOP-план", "вставь списком — Атлас соберёт план «Если–То»") {
                     attachOpen = false
                     planDialog = true
                 }
@@ -644,12 +678,12 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
 
     if (planDialog) {
         InputDialog(
-            title = "Выгрузить в план прорыва",
-            hint = "Напиши всё, что давит, или список дел с новой строки. Атлас отделит главное, соберёт план и доведёт до конца.",
+            title = "Выгрузить в WOOP-план",
+            hint = "Напиши всё, что давит, или список дел с новой строки. Атлас соберёт план с помехами и правилами «Если–То».",
             multiline = true,
             confirm = "Отправить",
             onConfirm = { text ->
-                vm.send("📋 Разложи это в конкретный пошаговый план прорыва и будем отрабатывать шаг за шагом:\n$text")
+                vm.send("📋 Разложи это в конкретный WOOP-план прорыва с препятствиями и правилами «Если–То»:\n$text")
             },
             onDismiss = { planDialog = false }
         )
@@ -670,6 +704,14 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
                     }
                     SheetAction(Icons.Filled.VolumeUp, "Озвучить вслух", "дыхательные паузы читаются автоматически") {
                         vm.speak(m.text)
+                        actionFor = null
+                    }
+                    SheetAction(Icons.Filled.Anchor, "Сохранить в Якоря силы", "вернётся по алгоритму памяти FSRS") {
+                        vm.saveToAnchor(m.text)
+                        actionFor = null
+                    }
+                    SheetAction(Icons.Filled.School, "В карточки Тренажёра (FSRS)", "оформить как вопрос-ответ для памяти") {
+                        cardDraftFor = m
                         actionFor = null
                     }
                     SheetAction(Icons.Filled.TextFields, "Выделить текст", "") {
@@ -704,6 +746,17 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
         }
     }
 
+    cardDraftFor?.let { m ->
+        val idx = messages.indexOfFirst { it.id == m.id }
+        val prevUser = if (idx > 0) messages.subList(0, idx).lastOrNull { it.role == Repository.ROLE_USER }?.text.orEmpty() else ""
+        SaveCardDialog(
+            initialFront = Norm.truncateWords(prevUser.ifBlank { "Какой ключевой принцип стоит помнить?" }, 140),
+            initialBack = Norm.plain(m.text),
+            onSave = { f, b -> vm.saveToCard(f, b) },
+            onDismiss = { cardDraftFor = null }
+        )
+    }
+
     selectFor?.let { m ->
         AlertDialog(
             onDismissRequest = { selectFor = null },
@@ -731,7 +784,7 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
     if (clearConfirm) {
         ConfirmDialog(
             title = "Очистить историю?",
-            text = "Сообщения этого чата будут удалены. Досье (якоря, ловушки, навыки, динамика) сохранится.",
+            text = "Сообщения этого чата будут удалены. Досье (якоря, карточки, решения, навыки) сохранится.",
             confirm = "Очистить", danger = true,
             onConfirm = { vm.clear() },
             onDismiss = { clearConfirm = false }
@@ -774,7 +827,61 @@ fun ChatScreen(sessionId: Long, main: MainViewModel, onBack: () -> Unit) {
     }
 }
 
-// ───────────────────────── Элементы ленты ─────────────────────────
+@Composable
+private fun SaveCardDialog(
+    initialFront: String,
+    initialBack: String,
+    onSave: (String, String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var front by remember { mutableStateOf(initialFront) }
+    var back by remember { mutableStateOf(initialBack) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Карточка в Тренажёр (FSRS)") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(front, { front = it }, label = { Text("Вопрос / ситуация") }, minLines = 2, maxLines = 5)
+                OutlinedTextField(back, { back = it }, label = { Text("Ответ / принцип") }, minLines = 3, maxLines = 8)
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onSave(front.trim(), back.trim())
+                    onDismiss()
+                },
+                enabled = front.isNotBlank() && back.isNotBlank()
+            ) { Text("Добавить", color = Fx.Gold) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена", color = Fx.TextDim) } },
+        containerColor = Fx.Card
+    )
+}
+
+@Composable
+private fun StreamingBubble(text: String, maxWidth: Dp) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+        Column(
+            Modifier
+                .widthIn(max = maxWidth)
+                .clip(RoundedCornerShape(18.dp, 18.dp, 18.dp, 4.dp))
+                .background(Fx.CardHigh)
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+        ) {
+            MarkdownText(
+                text = text,
+                color = Fx.Text,
+                style = MaterialTheme.typography.bodyLarge,
+                boldColor = Fx.Gold,
+                lineColor = Fx.Line,
+                headerBg = Fx.Ink.copy(alpha = 0.5f)
+            )
+            Spacer(Modifier.height(3.dp))
+            Text("печатает…", color = Fx.Gold, style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
 
 @Composable
 private fun DayChip(label: String) {
