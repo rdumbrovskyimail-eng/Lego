@@ -69,6 +69,9 @@ interface SessionDao {
     @Query("UPDATE sessions SET mode = :mode, modeArg = :modeArg, emoji = :emoji WHERE id = :id")
     suspend fun setMode(id: Long, mode: String, modeArg: String, emoji: String): Int
 
+    @Query("UPDATE sessions SET socraticMode = :enabled WHERE id = :id")
+    suspend fun setSocratic(id: Long, enabled: Boolean): Int
+
     @Query("SELECT COALESCE(SUM(unread), 0) FROM sessions")
     fun totalUnread(): Flow<Int>
 
@@ -129,6 +132,9 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE role != 'info' ORDER BY createdAt DESC, id DESC LIMIT :limit")
     suspend fun recentAcross(limit: Int): List<MessageEntity>
 
+    @Query("SELECT * FROM messages WHERE role != 'info' AND createdAt >= :since ORDER BY createdAt ASC")
+    suspend fun since(since: Long): List<MessageEntity>
+
     @Query("UPDATE messages SET status = :status, meta = :meta WHERE id = :id")
     suspend fun setStatus(id: Long, status: String, meta: String): Int
 
@@ -150,8 +156,16 @@ interface PingDao {
     @Insert
     suspend fun insert(e: PingEntity): Long
 
-    @Query("UPDATE pings SET answered = 1, answeredAt = :at WHERE sessionId = :sessionId AND answered = 0")
-    suspend fun markAnswered(sessionId: Long, at: Long): Int
+    @Query(
+        "UPDATE pings SET answered = 1, answeredAt = :at, " +
+            "latencyMs = CASE WHEN (:at - firedAt) > 0 THEN (:at - firedAt) ELSE 0 END, " +
+            "outcome = :outcome " +
+            "WHERE sessionId = :sessionId AND answered = 0"
+    )
+    suspend fun markAnswered(sessionId: Long, at: Long, outcome: String = "replied"): Int
+
+    @Query("UPDATE pings SET outcome = 'snoozed' WHERE answered = 0 AND outcome = ''")
+    suspend fun markUnansweredSnoozed(): Int
 
     @Query("SELECT COUNT(*) FROM pings WHERE answered = 0 AND firedAt > :since")
     suspend fun unansweredSince(since: Long): Int
@@ -164,6 +178,9 @@ interface PingDao {
 
     @Query("SELECT kbId FROM pings WHERE kbId != '' ORDER BY id DESC LIMIT :limit")
     suspend fun recentKbIds(limit: Int): List<String>
+
+    @Query("SELECT * FROM pings WHERE firedAt >= :since ORDER BY firedAt DESC")
+    suspend fun since(since: Long): List<PingEntity>
 
     @Query("SELECT COUNT(*) FROM pings")
     fun observeCount(): Flow<Int>
@@ -300,6 +317,9 @@ interface TrapDao {
     @Query("SELECT * FROM traps WHERE resolved = 0 ORDER BY times DESC, lastAt DESC LIMIT :limit")
     suspend fun top(limit: Int): List<TrapEntity>
 
+    @Query("SELECT * FROM traps WHERE lastAt >= :since ORDER BY times DESC")
+    suspend fun since(since: Long): List<TrapEntity>
+
     @Query("SELECT * FROM traps WHERE keyNorm = :key LIMIT 1")
     suspend fun byKey(key: String): TrapEntity?
 
@@ -380,4 +400,147 @@ interface DailyDao {
 
     @Query("SELECT * FROM daily ORDER BY day DESC LIMIT :limit")
     suspend fun recent(limit: Int): List<DailyEntity>
+}
+
+// ───────────────────────────── Новые DAO (v3) ─────────────────────────────
+
+@Dao
+interface SourceDao {
+    @Query("SELECT * FROM sources ORDER BY createdAt DESC, id DESC")
+    fun observeAll(): Flow<List<SourceEntity>>
+
+    @Query("SELECT * FROM sources ORDER BY createdAt DESC, id DESC")
+    suspend fun all(): List<SourceEntity>
+
+    @Query("SELECT * FROM sources WHERE id = :id")
+    suspend fun get(id: Long): SourceEntity?
+
+    @Insert
+    suspend fun insert(e: SourceEntity): Long
+
+    @Update
+    suspend fun update(e: SourceEntity): Int
+
+    @Query("DELETE FROM sources WHERE id = :id")
+    suspend fun delete(id: Long): Int
+}
+
+@Dao
+interface KnowledgeCardDao {
+    @Query("SELECT * FROM knowledge_cards WHERE suspended = 0 ORDER BY dueAt ASC, id DESC")
+    fun observeAllActive(): Flow<List<KnowledgeCardEntity>>
+
+    @Query("SELECT * FROM knowledge_cards WHERE sourceId = :sourceId ORDER BY id ASC")
+    fun observeBySource(sourceId: Long): Flow<List<KnowledgeCardEntity>>
+
+    @Query("SELECT * FROM knowledge_cards WHERE suspended = 0 AND dueAt <= :now ORDER BY dueAt ASC LIMIT :limit")
+    suspend fun due(now: Long, limit: Int): List<KnowledgeCardEntity>
+
+    @Query("SELECT COUNT(*) FROM knowledge_cards WHERE suspended = 0 AND dueAt <= :now")
+    fun observeDueCount(now: Long): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM knowledge_cards WHERE suspended = 0 AND dueAt <= :now")
+    suspend fun dueCount(now: Long): Int
+
+    @Query("SELECT * FROM knowledge_cards WHERE suspended = 0 ORDER BY lastReviewedAt ASC, id DESC LIMIT :limit")
+    suspend fun recentOrPracticePool(limit: Int): List<KnowledgeCardEntity>
+
+    @Query("SELECT * FROM knowledge_cards WHERE id = :id")
+    suspend fun get(id: Long): KnowledgeCardEntity?
+
+    @Insert
+    suspend fun insert(e: KnowledgeCardEntity): Long
+
+    @Insert
+    suspend fun insertAll(items: List<KnowledgeCardEntity>): List<Long>
+
+    @Update
+    suspend fun update(e: KnowledgeCardEntity): Int
+
+    @Query("DELETE FROM knowledge_cards WHERE id = :id")
+    suspend fun delete(id: Long): Int
+
+    @Query("DELETE FROM knowledge_cards WHERE sourceId = :sourceId")
+    suspend fun deleteBySource(sourceId: Long): Int
+}
+
+@Dao
+interface DecisionDao {
+    @Query("SELECT * FROM decisions ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'reviewed' THEN 1 ELSE 2 END, createdAt DESC")
+    fun observeAll(): Flow<List<DecisionEntity>>
+
+    @Query("SELECT * FROM decisions WHERE id = :id")
+    suspend fun get(id: Long): DecisionEntity?
+
+    @Query("SELECT * FROM decisions WHERE status = 'open' AND reviewAt > 0 AND reviewAt <= :now ORDER BY reviewAt ASC LIMIT :limit")
+    suspend fun dueForReview(now: Long, limit: Int): List<DecisionEntity>
+
+    @Insert
+    suspend fun insert(e: DecisionEntity): Long
+
+    @Update
+    suspend fun update(e: DecisionEntity): Int
+
+    @Query("DELETE FROM decisions WHERE id = :id")
+    suspend fun delete(id: Long): Int
+}
+
+@Dao
+interface PredictionDao {
+    @Query("SELECT * FROM predictions ORDER BY resolved ASC, checkAt ASC, id DESC")
+    fun observeAll(): Flow<List<PredictionEntity>>
+
+    @Query("SELECT * FROM predictions WHERE resolved = 1 ORDER BY resolvedAt DESC")
+    fun observeResolved(): Flow<List<PredictionEntity>>
+
+    @Query("SELECT * FROM predictions WHERE resolved = 1 ORDER BY resolvedAt DESC")
+    suspend fun allResolved(): List<PredictionEntity>
+
+    @Query("SELECT * FROM predictions WHERE resolved = 0 AND checkAt <= :now ORDER BY checkAt ASC LIMIT :limit")
+    suspend fun due(now: Long, limit: Int): List<PredictionEntity>
+
+    @Query("SELECT COUNT(*) FROM predictions WHERE resolved = 0 AND checkAt <= :now")
+    fun observeDueCount(now: Long): Flow<Int>
+
+    @Query("SELECT * FROM predictions WHERE id = :id")
+    suspend fun get(id: Long): PredictionEntity?
+
+    @Insert
+    suspend fun insert(e: PredictionEntity): Long
+
+    @Update
+    suspend fun update(e: PredictionEntity): Int
+
+    @Query("DELETE FROM predictions WHERE id = :id")
+    suspend fun delete(id: Long): Int
+}
+
+@Dao
+interface FocusSessionDao {
+    @Query("SELECT * FROM focus_sessions ORDER BY createdAt DESC LIMIT 50")
+    fun observeRecent(): Flow<List<FocusSessionEntity>>
+
+    @Query("SELECT * FROM focus_sessions WHERE createdAt >= :since ORDER BY createdAt DESC")
+    suspend fun since(since: Long): List<FocusSessionEntity>
+
+    @Insert
+    suspend fun insert(e: FocusSessionEntity): Long
+
+    @Query("DELETE FROM focus_sessions WHERE id = :id")
+    suspend fun delete(id: Long): Int
+}
+
+@Dao
+interface WeeklyReviewDao {
+    @Query("SELECT * FROM weekly_reviews ORDER BY createdAt DESC LIMIT 20")
+    fun observeAll(): Flow<List<WeeklyReviewEntity>>
+
+    @Query("SELECT * FROM weekly_reviews ORDER BY createdAt DESC LIMIT 1")
+    suspend fun latest(): WeeklyReviewEntity?
+
+    @Insert
+    suspend fun insert(e: WeeklyReviewEntity): Long
+
+    @Query("DELETE FROM weekly_reviews WHERE id = :id")
+    suspend fun delete(id: Long): Int
 }
