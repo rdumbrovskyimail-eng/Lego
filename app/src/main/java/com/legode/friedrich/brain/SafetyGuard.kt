@@ -1,81 +1,174 @@
 package com.legode.friedrich.brain
 
 /**
- * Локальный защитный и тактический маршрутизатор (работает до вызова Gemini и при сбое/блокировке API).
+ * Тактический и защитный маршрутизатор (работает локально до вызова LLM и при сбоях API).
  *
- * Главная задача:
- *  • отличать лень/тупик/саботаж (где нужен напористый прорыв) от острой боли, паники и суицидального риска;
- *  • гарантировать, что в критический момент приложение НЕ будет давить позитивом и не оставит человека одного.
+ * Задачи:
+ *  1) CRISIS — мгновенная деэскалация строго по новому вводу (без зацикливания на истории);
+ *  2) DISTRESS — бережное заземление при панике, слезах и остром истощении;
+ *  3) MI_EMPATHY — Мотивационное интервью (OARS) при амбивалентности и глухом сопротивлении;
+ *  4) SOCRATIC_COACH — защита от когнитивного оффлоадинга (когда человек просит думать за него);
+ *  5) NIGHT_WIND_DOWN / DIRECT_PUSH — адаптация давления к времени суток и режиму.
  */
 object SafetyGuard {
 
     enum class RiskLevel {
-        NONE,      // штатный режим: можно и нужно работать напористо, вскрывать отговорки и толкать к действию
-        DISTRESS,  // острая тяжесть, паника, глубокая апатия: сначала твёрдая опора и стабилизация, без давления
-        CRISIS     // риск суицида или самоповреждения: немедленная бережная деэскалация и контакты помощи
+        NONE,      // штатный режим
+        DISTRESS,  // острая тяжесть, паника, слёзы, истощение
+        CRISIS     // риск суицида или самоповреждения
+    }
+
+    enum class ToneMode {
+        CRISIS_CARE,
+        DISTRESS_CALM,
+        NIGHT_WIND_DOWN,
+        MI_EMPATHY,
+        SOCRATIC_COACH,
+        DIRECT_PUSH
     }
 
     data class Assessment(
         val level: RiskLevel,
         val reason: String = "",
-        val states: Set<String> = emptySet()
+        val states: Set<String> = emptySet(),
+        val toneMode: ToneMode = ToneMode.DIRECT_PUSH,
+        val resistanceDetected: Boolean = false,
+        val changeTalkDetected: Boolean = false,
+        val offloadingDetected: Boolean = false
     ) {
         val suppressPushy: Boolean get() = level != RiskLevel.NONE
     }
 
-    // Фразы-ложные тревоги (бытовые метафоры), которые не должны включать кризисный стоп-кран.
+    private fun wordRegex(pattern: String): Regex =
+        Regex("(?<![\\p{L}\\p{Nd}])(?:$pattern)(?![\\p{L}\\p{Nd}])")
+
+    // Бытовые метафоры и отрицания, которые не должны вызывать ложное срабатывание кризисного протокола.
     private val METAPHOR_EXCLUSIONS = listOf(
         "убиться веником", "убить время", "убиваю время", "умираю со смеху",
         "умереть со смеху", "смертельно устал на работе", "смертельно хочется спать",
-        "убью за это", "сам себя закопал в задачах", "мозг взрывается от работы"
+        "убью за это", "сам себя закопал в задачах", "мозг взрывается от работы",
+        "я в безопасности", "я не хочу умирать", "умирать не собираюсь", "жить хочу",
+        "не хочу умереть", "читал про суицид", "статья про суицид"
     )
 
-    // Высокорисковые маркеры суицидального намерения и самоповреждения (нормализованные, с ё→е).
     private val CRISIS_PATTERNS = listOf(
-        Regex("\\b(хочу|решил|планирую|собираюсь|пора|лучше)\\s+(умереть|сдохнуть|покончить|уйти из жизни|выпилиться)\\b"),
-        Regex("\\b(покончить с собой|свести счеты с жизнью|наложить на себя руки|убить себя|резать себя|режу себя|порезать вены)\\b"),
-        Regex("\\b(не хочу жить|больше не могу жить|зачем мне жить|нет смысла жить дальше|хочу исчезнуть навсегда)\\b"),
-        Regex("\\b(суицид|самоубийств|таблеток наглотаться|спрыгнуть с)\\w*\\b"),
-        Regex("\\b(без меня всем будет лучше|я всем мешаю жить|прощальное письмо)\\b")
+        wordRegex("(?:хочу|решил|планирую|собираюсь|пора|лучше)\\s+(?:умереть|сдохнуть|покончить|уйти из жизни|выпилиться)"),
+        wordRegex("(?:покончить с собой|свести счеты с жизнью|наложить на себя руки|убить себя|резать себя|режу себя|порезать вены)"),
+        wordRegex("(?:не хочу жить|больше не могу жить|зачем мне жить|нет смысла жить дальше|хочу исчезнуть навсегда)"),
+        wordRegex("(?:суицид|самоубийств|таблеток наглотаться|спрыгнуть с)[\\p{L}\\p{Nd}]*"),
+        wordRegex("(?:без меня всем будет лучше|я всем мешаю жить|прощальное письмо)")
     )
 
-    // Острый дистресс / паника / глубокое отчаяние: снижаем агрессивный напор, включаем заземление.
     private val DISTRESS_PATTERNS = listOf(
-        Regex("\\b(паническая атака|накрыла паника|задыхаюсь|трясет всего|сердце выпрыгивает|схожу с ума)\\b"),
-        Regex("\\b(не вывожу|сил вообще нет|полное дно|жизнь разрушена|все кончено|ничего не осталось)\\b"),
-        Regex("\\b(рыдаю|плачу без остановки|не могу встать с кровати уже|ненавижу себя|я ничтожество)\\b"),
-        Regex("\\b(хочется провалиться|не хочу просыпаться|пустота внутри|мертвый внутри)\\b")
+        wordRegex("(?:паническая атака|накрыла паника|задыхаюсь|трясет всего|сердце выпрыгивает|схожу с ума)"),
+        wordRegex("(?:не вывожу|сил вообще нет|полное дно|жизнь разрушена|все кончено|ничего не осталось)"),
+        wordRegex("(?:рыдаю|плачу без остановки|не могу встать с кровати уже|ненавижу себя|я ничтожество)"),
+        wordRegex("(?:хочется провалиться|не хочу просыпаться|пустота внутри|мертвый внутри)")
     )
 
-    fun assess(rawText: String, inferredStates: Set<String> = emptySet()): Assessment {
-        val clean = Norm.looseKey(rawText)
-        if (clean.isEmpty()) return Assessment(RiskLevel.NONE, states = inferredStates)
+    // Сигналы защитного сопротивления (Sustain Talk по Miller & Rollnick), где прямой напор вызывает отторжение.
+    private val RESISTANCE_PATTERNS = listOf(
+        wordRegex("(?:бесполезно пробовать|все равно не получится|ничего не изменится|мне ничего не поможет)"),
+        wordRegex("(?:отстань|хватит давить|я не готов|не хочу сейчас ничего менять|проще забить|оставь меня)"),
+        wordRegex("(?:ты не понимаешь|легко говорить|мне слишком тяжело даже пробовать)")
+    )
 
-        val stripped = METAPHOR_EXCLUSIONS.fold(clean) { acc, meta ->
+    // Сигналы внутренней мотивации (Change Talk), за которые Атласу стоит зацепиться и усилить.
+    private val CHANGE_TALK_PATTERNS = listOf(
+        wordRegex("(?:хочу попробовать|надоело так жить|хочу выбраться|готов сделать|может стоит|попробую сегодня)"),
+        wordRegex("(?:мне важно|ради себя|не хочу так больше|пора менять|давай план|хочу научиться)")
+    )
+
+    // Запросы, где человек сбрасывает интеллектуальную работу на ИИ (Cognitive Offloading).
+    private val OFFLOADING_PATTERNS = listOf(
+        wordRegex("(?:реши за меня|прими решение за меня|просто скажи что выбрать|сделай все за меня)"),
+        wordRegex("(?:напиши полностью за меня|подумай за меня|дай готовый ответ без вопросов)")
+    )
+
+    private val RELIEF_PATTERNS = listOf(
+        wordRegex("(?:я в безопасности|отпустило|стало легче|успокоился|дышать проще|спасибо полегчало)")
+    )
+
+    /** Совместимый однострочный вызов (например, для одиночного сообщения или теста). */
+    fun assess(rawText: String, inferredStates: Set<String> = emptySet()): Assessment =
+        assessTurn(currentTurnText = rawText, recentHistoryText = "", inferredStates = inferredStates)
+
+    /**
+     * Полный анализ хода диалога:
+     *  • CRISIS проверяется ТОЛЬКО по [currentTurnText] (новым необработанным сообщениям), чтобы кнопки
+     *    быстрого ответа после кризисного экрана не зацикливали бота;
+     *  • DISTRESS учитывает и недавний контекст, если текущий ответ нейтрально-короткий и не выражает облегчения.
+     */
+    fun assessTurn(
+        currentTurnText: String,
+        recentHistoryText: String = "",
+        inferredStates: Set<String> = emptySet(),
+        isNightRisk: Boolean = false,
+        socraticPreferred: Boolean = false
+    ): Assessment {
+        val currentClean = stripMetaphors(Norm.looseKey(currentTurnText))
+        val historyClean = stripMetaphors(Norm.looseKey(recentHistoryText))
+
+        if (currentClean.isEmpty() && historyClean.isEmpty()) {
+            val mode = if (isNightRisk) ToneMode.NIGHT_WIND_DOWN else if (socraticPreferred) ToneMode.SOCRATIC_COACH else ToneMode.DIRECT_PUSH
+            return Assessment(RiskLevel.NONE, states = inferredStates, toneMode = mode)
+        }
+
+        // 1. Кризис — строго на актуальном сообщении пользователя.
+        if (currentClean.isNotEmpty() && CRISIS_PATTERNS.any { it.containsMatchIn(currentClean) }) {
+            return Assessment(
+                level = RiskLevel.CRISIS,
+                reason = "Обнаружены сигналы острого кризиса или риска самоповреждения.",
+                states = inferredStates + "crisis",
+                toneMode = ToneMode.CRISIS_CARE
+            )
+        }
+
+        // 2. Острый дистресс / паника.
+        val hasRelief = currentClean.isNotEmpty() && RELIEF_PATTERNS.any { it.containsMatchIn(currentClean) }
+        val distressNow = currentClean.isNotEmpty() && DISTRESS_PATTERNS.any { it.containsMatchIn(currentClean) }
+        val distressRecent = !hasRelief && currentClean.length < 40 &&
+            historyClean.isNotEmpty() && DISTRESS_PATTERNS.any { it.containsMatchIn(historyClean) }
+
+        if (distressNow || distressRecent) {
+            return Assessment(
+                level = RiskLevel.DISTRESS,
+                reason = "Острый эмоциональный перегруз или глубокий спад.",
+                states = inferredStates + "distress",
+                toneMode = ToneMode.DISTRESS_CALM
+            )
+        }
+
+        val resistance = currentClean.isNotEmpty() && RESISTANCE_PATTERNS.any { it.containsMatchIn(currentClean) }
+        val changeTalk = currentClean.isNotEmpty() && CHANGE_TALK_PATTERNS.any { it.containsMatchIn(currentClean) }
+        val offloading = currentClean.isNotEmpty() && OFFLOADING_PATTERNS.any { it.containsMatchIn(currentClean) }
+
+        val tone = when {
+            isNightRisk -> ToneMode.NIGHT_WIND_DOWN
+            resistance && !changeTalk -> ToneMode.MI_EMPATHY
+            socraticPreferred || offloading -> ToneMode.SOCRATIC_COACH
+            else -> ToneMode.DIRECT_PUSH
+        }
+
+        val extraStates = LinkedHashSet(inferredStates).apply {
+            if (resistance) add("resistance")
+        }
+
+        return Assessment(
+            level = RiskLevel.NONE,
+            states = extraStates,
+            toneMode = tone,
+            resistanceDetected = resistance,
+            changeTalkDetected = changeTalk,
+            offloadingDetected = offloading
+        )
+    }
+
+    private fun stripMetaphors(clean: String): String {
+        if (clean.isEmpty()) return ""
+        return METAPHOR_EXCLUSIONS.fold(clean) { acc, meta ->
             acc.replace(Norm.looseKey(meta), " ")
-        }
-
-        for (p in CRISIS_PATTERNS) {
-            if (p.containsMatchIn(stripped)) {
-                return Assessment(
-                    level = RiskLevel.CRISIS,
-                    reason = "Обнаружены сигналы острого кризиса или риска самоповреждения.",
-                    states = inferredStates + "crisis"
-                )
-            }
-        }
-
-        for (p in DISTRESS_PATTERNS) {
-            if (p.containsMatchIn(stripped)) {
-                return Assessment(
-                    level = RiskLevel.DISTRESS,
-                    reason = "Острый эмоциональный перегруз или глубокий спад.",
-                    states = inferredStates + "distress"
-                )
-            }
-        }
-
-        return Assessment(RiskLevel.NONE, states = inferredStates)
+        }.trim()
     }
 
     /** Мгновенный ответ при CRISIS (работает и офлайн, и если Gemini заблокировал ответ). */
@@ -108,22 +201,40 @@ object SafetyGuard {
         )
     }
 
-    /** Директива для системного/пользовательского контекста, адаптирующая тон Атласа. */
-    fun tacticalDirective(assessment: Assessment, isNightRisk: Boolean): String = when (assessment.level) {
-        RiskLevel.CRISIS ->
-            "КРИТИЧЕСКИЙ ПРОТОКОЛ БЕЗОПАСНОСТИ: запрещён жёсткий напор, критика, обесценивание и философия о борьбе. " +
-                "Говори предельно тепло, спокойно и заземляюще. Поддержи контакт, предложи обратиться к близким или на кризисную линию (112 / 0800 111 0 111 / 8-800-333-44-34) и удержи фокус на безопасности в ближайшие минуты."
+    /** Директива для системного/пользовательского контекста, точно настраивающая стратегию Атласа. */
+    fun tacticalDirective(assessment: Assessment, isNightRisk: Boolean): String {
+        val base = when (assessment.toneMode) {
+            ToneMode.CRISIS_CARE ->
+                "КРИТИЧЕСКИЙ ПРОТОКОЛ БЕЗОПАСНОСТИ: запрещён жёсткий напор, критика, обесценивание и философия о борьбе. " +
+                    "Говори предельно тепло, спокойно и заземляюще. Поддержи контакт, предложи обратиться к близким или на кризисную линию (112 / 0800 111 0 111 / 8-800-333-44-34) и удержи фокус на безопасности."
 
-        RiskLevel.DISTRESS ->
-            "РЕЖИМ ТВЁРДОЙ ОПОРЫ: человек сейчас в острой боли, панике или истощении. Отмени жёсткий прессинг. " +
-                "Сначала признай тяжесть без жалости и без токсичного позитива («всё будет супер»), дай 1 конкретную технику стабилизации тела/мысли из базы знаний и предложи микро-действие на 60 секунд."
+            ToneMode.DISTRESS_CALM ->
+                "РЕЖИМ ТВЁРДОЙ ОПОРЫ: человек сейчас в острой боли, панике или истощении. Отмени жёсткий прессинг. " +
+                    "Сначала признай тяжесть без жалости и без токсичного позитива, дай 1 конкретную технику стабилизации тела/мысли из базы знаний и предложи микро-шаг на 60 секунд."
 
-        RiskLevel.NONE -> if (isNightRisk) {
-            "НОЧНОЙ ТАКТИЧЕСКИЙ РЕЖИМ: сейчас позднее время. Не накручивай и не требуй масштабных подвигов. " +
-                "Останови ночную прокрутку мыслей (руминацию), переведи фокус на разгрузку головы, принятие неопределённости до утра и сон."
+            ToneMode.NIGHT_WIND_DOWN ->
+                "НОЧНОЙ ТАКТИЧЕСКИЙ РЕЖИМ: сейчас позднее время. Не накручивай и не требуй масштабных подвигов. " +
+                    "Останови ночную прокрутку мыслей (руминацию), переведи фокус на выгрузку тревог до утра, снятие напряжения и сон."
+
+            ToneMode.MI_EMPATHY ->
+                "РЕЖИМ МОТИВАЦИОННОГО ИНТЕРВЬЮ (OARS): у человека сильное сопротивление и амбивалентность — НЕ спорь в лоб и НЕ читай мораль (это усилит протест). " +
+                    "Сначала отзеркаль его сомнение и усталость, уважай свободу выбора, а затем задай один открытый вопрос, чтобы он сам назвал, что ему важно или почему так жить дальше не хочется."
+
+            ToneMode.SOCRATIC_COACH ->
+                "СОКРАТИЧЕСКИЙ РЕЖИМ (АНТИ-ОФФЛОАДИНГ): не решай задачу за человека и не отдавай сразу готовую простыню выводов. " +
+                    "Сохрани ему полезное когнитивное усилие: попроси сформулировать собственную гипотезу, 2 альтернативы или скрытое допущение — и опирайся на стандарты Пола–Элдер (ясность, факты, логика, альтернативный взгляд)."
+
+            ToneMode.DIRECT_PUSH -> if (isNightRisk) {
+                "НОЧНОЙ РЕЖИМ: бережный фокус на выгрузку мыслей и покой."
+            } else {
+                "ШТАТНЫЙ НАПОРИСТЫЙ РЕЖИМ: будь честным, собранным, энергичным союзником. Не сюсюкай и не корми дежурными утешениями. " +
+                    "Вскрывай когнитивные искажения и отговорки, опирайся на базу знаний и дожимай до одного конкретного WOOP-шага («Если [помеха], то я [действие]»)."
+            }
+        }
+        return if (assessment.changeTalkDetected && assessment.level == RiskLevel.NONE) {
+            "$base Пользователь уже проявил импульс к действию (Change Talk) — обязательно закрепи его собственную причину и переведи в конкретный ближайший шаг."
         } else {
-            "ШТАТНЫЙ НАПОРИСТЫЙ РЕЖИМ: будь честным, энергичным, собранным союзником. Не сюсюкай и не корми дежурными утешениями. " +
-                "Вскрывай когнитивные искажения и отговорки, опирайся на психологию и философию из базы знаний, возвращай человеку чувство контроля и дожимай до одного конкретного шага."
+            base
         }
     }
 }
