@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,8 +25,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Insights
-import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -59,6 +56,7 @@ import com.legode.friedrich.brain.Skills
 import com.legode.friedrich.core.Timex
 import com.legode.friedrich.data.db.SessionEntity
 import com.legode.friedrich.ui.MainViewModel
+import com.legode.friedrich.ui.RootTab
 import com.legode.friedrich.ui.Screen
 import com.legode.friedrich.ui.common.Chip
 import com.legode.friedrich.ui.common.ConfirmDialog
@@ -78,6 +76,7 @@ fun SessionsScreen(main: MainViewModel) {
     val profile by main.profile.collectAsStateWithLifecycle()
     val skills by main.skills.collectAsStateWithLifecycle()
     val anchors by main.anchors.collectAsStateWithLifecycle()
+    val cards by main.knowledgeCards.collectAsStateWithLifecycle()
     val settings by main.settingsFlow.collectAsStateWithLifecycle()
     val nextPing by main.nextPing.collectAsStateWithLifecycle()
 
@@ -98,7 +97,8 @@ fun SessionsScreen(main: MainViewModel) {
 
     val mastery = remember(skills) { skills.associate { it.skillId to it.mastery } }
     val estimate = remember(mastery) { Curriculum.estimate(mastery) }
-    val due = remember(anchors, now) { anchors.count { it.dueAt <= now } }
+    val dueAnchors = remember(anchors, now) { anchors.count { it.dueAt <= now } }
+    val dueCards = remember(cards, now) { cards.count { it.dueAt <= now } }
     val shown = remember(sessions, query) {
         val q = query.trim().lowercase()
         if (q.isEmpty()) sessions
@@ -111,37 +111,31 @@ fun SessionsScreen(main: MainViewModel) {
             .background(Fx.Ink)
     ) {
         Column(Modifier.fillMaxSize()) {
-            TopBar(title = Persona.NAME, subtitle = "психо-эмоциональный движок") {
-                IconButton(onClick = { main.open(Screen.Dossier) }) {
-                    Icon(Icons.Filled.Insights, contentDescription = "Досье", tint = Fx.Text)
-                }
-                IconButton(onClick = { main.open(Screen.Reference(null)) }) {
-                    Icon(Icons.Filled.MenuBook, contentDescription = "База и практики", tint = Fx.Text)
-                }
+            TopBar(title = Persona.NAME, subtitle = "психо-когнитивный движок") {
                 IconButton(onClick = { main.open(Screen.Settings) }) {
                     Icon(Icons.Filled.Settings, contentDescription = "Настройки", tint = Fx.Text)
                 }
             }
             LazyColumn(
                 Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 96.dp),
+                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 88.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 item(key = "summary") {
-                    Panel(onClick = { main.open(Screen.Dossier) }) {
+                    Panel(onClick = { main.selectTab(RootTab.DOSSIER) }) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 val who = profile?.name?.takeIf { it.isNotBlank() }?.let { "$it · " } ?: ""
                                 val moodTail = profile?.lastMood?.takeIf { it > 0 }?.let { " · $it/10" } ?: ""
                                 Text(
-                                    "${who}опора: ${estimate.label}$moodTail",
+                                    "${who}${profile?.cognitiveRank ?: "наблюдатель"} · опора: ${estimate.label}$moodTail",
                                     color = Fx.Text, style = MaterialTheme.typography.titleMedium
                                 )
                                 Spacer(Modifier.height(6.dp))
                                 Meter(estimate.overall, Modifier.fillMaxWidth())
                                 Spacer(Modifier.height(6.dp))
                                 Text(
-                                    "Навыки устойчивости освоены на ${estimate.overall}%",
+                                    "Психика ${estimate.overall}% · Интеллект и системы ${estimate.intelOverall}%",
                                     color = Fx.TextDim, style = MaterialTheme.typography.bodySmall
                                 )
                             }
@@ -149,7 +143,7 @@ fun SessionsScreen(main: MainViewModel) {
                             Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Pill("🔥 ${profile?.streak ?: 0} дн", Fx.Gold)
                                 Pill("⚡ ${profile?.xp ?: 0} XP")
-                                Pill("⚓ $due якорей", if (due > 0) Fx.Blue else Fx.TextDim)
+                                Pill("🧬 ${dueCards + dueAnchors} к повтору", if (dueCards + dueAnchors > 0) Fx.Blue else Fx.TextDim)
                             }
                         }
                         Spacer(Modifier.height(10.dp))
@@ -166,9 +160,13 @@ fun SessionsScreen(main: MainViewModel) {
                         }
                         Spacer(Modifier.height(10.dp))
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            item { Chip("🚀 В тупике (Прорыв)", onClick = { main.newSession(Skills.BREAKTHROUGH) }) }
-                            item { Chip("🌊 Накрыло (SOS)", onClick = { main.newSession(Skills.SOS) }) }
-                            item { Chip("🧭 Аудит состояния", onClick = { main.newSession(Skills.DIAGNOSTIC) }) }
+                            item { Chip("🚀 В тупике", onClick = { main.newSession(Skills.BREAKTHROUGH) }) }
+                            item { Chip("🌊 SOS", onClick = { main.newSession(Skills.SOS) }) }
+                            item { Chip("🎓 Учитель", onClick = { main.newSession(Skills.TEACH) }) }
+                            item { Chip("⚖️ Стилмен", onClick = { main.newSession(Skills.STEELMAN) }) }
+                            item { Chip("🧩 Провал", onClick = { main.newSession(Skills.PRODUCTIVE_FAIL) }) }
+                            item { Chip("🪞 Части IFS", onClick = { main.newSession(Skills.IFS_PARTS) }) }
+                            item { Chip("🧭 Аудит", onClick = { main.newSession(Skills.DIAGNOSTIC) }) }
                         }
                     }
                 }
@@ -196,7 +194,6 @@ fun SessionsScreen(main: MainViewModel) {
         Row(
             Modifier
                 .align(Alignment.BottomEnd)
-                .navigationBarsPadding()
                 .padding(16.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .background(Fx.Gold)
@@ -206,7 +203,7 @@ fun SessionsScreen(main: MainViewModel) {
         ) {
             Icon(Icons.Filled.Add, contentDescription = null, tint = Fx.OnGold)
             Spacer(Modifier.width(8.dp))
-            Text("Новый режим", color = Fx.OnGold, fontWeight = FontWeight.SemiBold)
+            Text("Арены и режимы", color = Fx.OnGold, fontWeight = FontWeight.SemiBold)
         }
     }
 
@@ -272,7 +269,7 @@ fun SessionsScreen(main: MainViewModel) {
     clearFor?.let { s ->
         ConfirmDialog(
             title = "Очистить «${s.title}»?",
-            text = "Сообщения будут удалены. Досье (якоря, ловушки, навыки) сохранится.",
+            text = "Сообщения будут удалены. Досье, карточки и решения сохранятся.",
             confirm = "Очистить", danger = true,
             onConfirm = { main.clearSession(s.id) },
             onDismiss = { clearFor = null }
@@ -316,7 +313,7 @@ private fun SessionRow(s: SessionEntity, now: Long, onClick: () -> Unit, onLong:
             val preview = when {
                 s.draft.isNotBlank() -> "Черновик: " + s.draft
                 s.lastPreview.isNotBlank() -> s.lastPreview
-                s.isHome -> "Главный канал: сюда приходят СМС от Атласа"
+                s.isHome -> "Главный канал: сюда приходят СМС и вызовы от Атласа"
                 else -> Skills.mode(s.mode).hint
             }
             Text(
@@ -359,7 +356,6 @@ private fun SheetLine(text: String, danger: Boolean = false, onClick: () -> Unit
     )
 }
 
-/** Выбор режима новой беседы; для практики — навык, для репетиции — сложная ситуация. */
 @Composable
 fun NewSessionSheet(mastery: Map<String, Int>, onDismiss: () -> Unit, onPick: (String, String) -> Unit) {
     var step by remember { mutableStateOf("modes") }
@@ -371,7 +367,7 @@ fun NewSessionSheet(mastery: Map<String, Int>, onDismiss: () -> Unit, onPick: (S
         when (step) {
             "topics" -> LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp)) {
                 item {
-                    Text("Выбери протокол", color = Fx.Text, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 4.dp))
+                    Text("Выбери протокол или модель", color = Fx.Text, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 4.dp))
                     val next = Curriculum.focus(mastery, 1).firstOrNull()
                     if (next != null) {
                         Spacer(Modifier.height(6.dp))
@@ -426,7 +422,7 @@ fun NewSessionSheet(mastery: Map<String, Int>, onDismiss: () -> Unit, onPick: (S
 
             else -> LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp)) {
                 item {
-                    Text("Запустить режим", color = Fx.Text, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 8.dp))
+                    Text("Выбери арену или режим", color = Fx.Text, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 8.dp))
                 }
                 items(Skills.modes, key = { it.id }) { m ->
                     Row(
